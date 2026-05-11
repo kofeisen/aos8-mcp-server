@@ -18,7 +18,7 @@
 
 - **会话模型 B**：`aos8_session_create_from_config`（读本地 YAML）或 `aos8_session_create`（参数传入）登录 MM → 多次工具调用复用 `session_id` → `aos8_session_destroy` 注销并清缓存。
 - **执行策略**：默认在 **MM** 上执行；若响应中含 *This command is not applicable on conductor switch*，则按配置中 **MD 顺序** 在对应 MD 上登录并重试。
-- **领域工具**（均可选 `cli_suffix` 追加 `| include` 等）：`aos8_controllers`、`aos8_clients`、`aos8_aps`、`aos8_log`、`aos8_wlan`，另提供通用 `aos8_show`。
+- **领域工具**（均可选 `cli_suffix` 追加 `| include` 等）：`aos8_controllers`、`aos8_clients`、`aos8_aps`（`variant`）、`aos8_log`、`aos8_wlan`（`variant` + 可选 `profile_name`），另提供通用 `aos8_show`。
 - **响应**：始终包含 **`raw`**（设备返回解析结果），并附带 **`normalized`** 启发式摘要（不改变 `raw`）。
 - **缓存**：同 `session_id` + 目标 IP + 完整命令字符串，在进程内缓存一段时间（默认 60s，可用环境变量调整）。
 
@@ -68,6 +68,14 @@ aos8-mcp-server
 
 MCP Streamable HTTP 端点：`http://<主机>:<端口>/mcp`
 
+### Streamable HTTP 与会话头（排查 400 / Open WebUI）
+
+协议顺序是：**先 `POST /mcp` 发 JSON-RPC `initialize`**，响应头里会有 **`mcp-session-id`**；之后的 **`GET`（SSE）或其它 `POST`** 须在请求头带上同一值：`Mcp-Session-Id: <上一步返回的 id>`。
+
+因此仅用 **`curl` 发裸 `GET`** 会出现 **`400 Bad Request: Missing session ID`**，这是**预期行为**，不代表服务挂了。响应里若仍带 `mcp-session-id`，那是服务端为新会话分配的 id，**不会**自动当作你本次 GET 已提供的头。
+
+可选环境变量 **`AOS8_MCP_STATELESS_HTTP=true`**：启用 FastMCP 的 **stateless** 模式（每请求独立 transport、不要求会话头），部分 Web UI 或简易探测更友好；若 Cherry Studio 等在 stateful 下已正常，可保持默认不开启。
+
 ## 开源 Chat UI 对接模板
 
 以下字段名需替换为你的环境。具体 JSON 以你所用 UI 的「MCP HTTP / Streamable」配置为准。
@@ -88,7 +96,8 @@ MCP Streamable HTTP 端点：`http://<主机>:<端口>/mcp`
 ### 扩展默认 show 命令
 
 - **通用领域**：在 `aos8_mcp/show_registry.py` 的 `DOMAIN_SPECS` 中增加或修改条目；`normalizer` 见 `aos8_mcp/normalize.py`。
-- **`show ap` 子命令**：在 `AP_SHOW_VARIANTS` 中增加一行，或通过 `aos8_aps(..., variant="键名")` 调用；键名列表可用 MCP 工具 **`aos8_ap_show_variants`** 查询。
+- **`show ap` 子命令**：在 `AP_SHOW_VARIANTS` 中维护 `(命令, normalizer, 英文描述)`，通过 `aos8_aps(..., variant="键名")` 调用；**`aos8_ap_show_variants`** 返回每键的 `command` 与 `description` 供选型。
+- **`show wlan` 子命令**：在 `WLAN_SHOW_VARIANTS` 中维护为与 AP 相同的 **`(command, normalizer, description)`**；`aos8_wlan(..., variant=..., profile_name=可选)`；**`aos8_wlan_show_variants`** 返回每键的 `command` 与 `description`。`ssid_profile` / `he_ssid_profile` / `ht_ssid_profile` 未传 `profile_name` 时默认追加 **`default`**。
 
 ### 典型调用顺序（给模型或操作说明）
 

@@ -8,6 +8,7 @@ cd "$ROOT"
 : "${AOS8_MCP_HOST:=0.0.0.0}"
 : "${AOS8_MCP_PORT:=8765}"
 : "${AOS8_CACHE_TTL_SECONDS:=60}"
+# 可选: AOS8_MCP_STATELESS_HTTP=true — Streamable HTTP 无状态模式（见 README「排查 400」）
 export AOS8_MCP_HOST AOS8_MCP_PORT AOS8_CACHE_TTL_SECONDS
 # 未设置 AOS8_DEVICES_CONFIG 时，默认读取 $ROOT/aos8.devices.yaml（见 aos8_mcp.devices_config）
 

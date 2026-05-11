@@ -21,12 +21,22 @@ from aos8_mcp.show_registry import (
     NormalizerHint,
     ap_variant_catalog,
     get_spec,
+    normalize_wlan_variant_key,
     resolve_ap_variant,
+    resolve_wlan_variant,
+    wlan_variant_catalog,
 )
 
 _HOST = os.environ.get("AOS8_MCP_HOST", "0.0.0.0")
 _PORT = int(os.environ.get("AOS8_MCP_PORT", "8765"))
 _CACHE_TTL = float(os.environ.get("AOS8_CACHE_TTL_SECONDS", "60"))
+# Streamable HTTP：默认 stateful（每会话需 mcp-session-id）。裸 GET /mcp 会 400，属协议顺序问题。
+# 若 Open WebUI 等客户端握手异常，可设 AOS8_MCP_STATELESS_HTTP=true（每请求独立 transport，无会话头要求）。
+_STATELESS_HTTP = os.environ.get("AOS8_MCP_STATELESS_HTTP", "").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
 
 store.cache.configure_ttl(_CACHE_TTL)
 
@@ -38,10 +48,12 @@ mcp = FastMCP(
         "默认在 MM 执行；若提示 conductor 不可用会自动按配置的 MD 顺序尝试。"
         "建议在控制器上配置 #no paging 以避免分页。支持 show 后接 | include / exclude / begin 等过滤。"
         "aos8_aps 支持 variant 选择多种 show ap 子命令；aos8_ap_show_variants 可列出全部键。"
+        "aos8_wlan 支持 variant 选择多种 show wlan 子命令；profile_name 可选；aos8_wlan_show_variants 列出键。"
     ),
     host=_HOST,
     port=_PORT,
     streamable_http_path="/mcp",
+    stateless_http=_STATELESS_HTTP,
 )
 
 
@@ -192,8 +204,8 @@ async def _domain_show(
     command_override: str | None,
     extra_hint: NormalizerHint | None = None,
     *,
-    wlan_mode: Literal["virtual_ap", "ssid_profile"] | None = None,
-    ssid_profile_name: str | None = None,
+    wlan_variant: str | None = None,
+    wlan_profile_name: str | None = None,
     ap_variant: str | None = None,
     use_cache: bool = True,
 ) -> dict[str, Any]:
@@ -201,10 +213,17 @@ async def _domain_show(
     hint: NormalizerHint = extra_hint or spec.normalizer
     if command_override and command_override.strip():
         base = command_override.strip()
-    elif domain == "wlan" and wlan_mode == "ssid_profile":
-        name = (ssid_profile_name or "default").strip()
-        base = f"show wlan ssid-profile {name}"
-        hint = "wlan_ssid_profile"
+    elif domain == "wlan" and wlan_variant:
+        try:
+            base, hint = resolve_wlan_variant(wlan_variant)
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        if wlan_profile_name and wlan_profile_name.strip():
+            base = f"{base} {wlan_profile_name.strip()}"
+        else:
+            vk = normalize_wlan_variant_key(wlan_variant)
+            if vk in ("ssid_profile", "he_ssid_profile", "ht_ssid_profile"):
+                base = f"{base} default"
     elif domain == "aps" and ap_variant:
         try:
             base, hint = resolve_ap_variant(ap_variant)
@@ -221,6 +240,8 @@ async def _domain_show(
         out = {"ok": True, "domain": domain, **await _with_norm(raw, hint)}
         if domain == "aps" and ap_variant and not (command_override and command_override.strip()):
             out["ap_variant"] = ap_variant.strip()
+        if domain == "wlan" and wlan_variant and not (command_override and command_override.strip()):
+            out["wlan_variant"] = wlan_variant.strip()
         return out
     except KeyError as e:
         return {"ok": False, "error": str(e)}
@@ -252,7 +273,7 @@ async def aos8_clients(
 
 @mcp.tool()
 async def aos8_ap_show_variants() -> dict[str, Any]:
-    """列出 aos8_aps 支持的 variant 键及对应完整 show 命令（可先调用再选 variant）。"""
+    """列出 aos8_aps 支持的 variant：每项含 command 与 description（与 AOS8 CLI 说明一致）。"""
     return {"ok": True, "variants": ap_variant_catalog()}
 
 
@@ -264,9 +285,9 @@ async def aos8_aps(
     command_override: str | None = None,
     use_cache: bool = True,
 ) -> dict[str, Any]:
-    """执行 show ap 子命令。variant 为注册键（如 active、ap_name、denylist_clients）；默认 database。
+    """执行 show ap 子命令。variant 为注册键（如 database、ap_lacp_striping_ip、denylist_clients）；默认 database。
 
-    完整列表见 aos8_ap_show_variants 或仓库内 ``aos8_mcp/show_registry.py`` 的 ``AP_SHOW_VARIANTS``。
+    各 variant 的 CLI 与英文说明见 **aos8_ap_show_variants**；定义在 ``aos8_mcp/show_registry.py`` 的 ``AP_SHOW_VARIANTS``。
     仍可通过 command_override 传入任意 ``show ap ...``（此时忽略 variant）。
     """
     ap_v = None if (command_override and command_override.strip()) else variant
@@ -292,22 +313,32 @@ async def aos8_log(
 
 
 @mcp.tool()
+async def aos8_wlan_show_variants() -> dict[str, Any]:
+    """列出 aos8_wlan 支持的 variant：每项含 command 与 description（格式与 aos8_ap_show_variants 一致）。"""
+    return {"ok": True, "variants": wlan_variant_catalog()}
+
+
+@mcp.tool()
 async def aos8_wlan(
     session_id: str,
-    wlan_mode: Literal["virtual_ap", "ssid_profile"] = "virtual_ap",
-    ssid_profile_name: str | None = None,
+    variant: str = "virtual_ap",
+    profile_name: str | None = None,
     cli_suffix: str | None = None,
     command_override: str | None = None,
     use_cache: bool = True,
 ) -> dict[str, Any]:
-    """virtual_ap: show wlan virtual-ap；ssid_profile: show wlan ssid-profile <name>。"""
+    """执行 show wlan 子命令。variant 见 aos8_wlan_show_variants；需要具体 profile 名时传 profile_name（如 default）。
+
+    仍可用 command_override 传入完整 ``show wlan ...``（此时忽略 variant / profile_name）。
+    """
+    wlan_v = None if (command_override and command_override.strip()) else variant
     return await _domain_show(
         session_id,
         "wlan",
         cli_suffix,
         command_override,
-        wlan_mode=wlan_mode,
-        ssid_profile_name=ssid_profile_name,
+        wlan_variant=wlan_v,
+        wlan_profile_name=profile_name,
         use_cache=use_cache,
     )
 
