@@ -1,0 +1,23 @@
+# 复制为 /etc/systemd/system/aos8-mcp.service 后按需修改路径与用户，执行:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now aos8-mcp
+
+[Unit]
+Description=Aruba AOS8 MCP Server (Streamable HTTP)
+After=network.target
+
+[Service]
+Type=simple
+User=CHANGE_ME
+WorkingDirectory=/opt/aos8-mcp-server
+Environment=AOS8_MCP_HOST=0.0.0.0
+Environment=AOS8_MCP_PORT=8765
+Environment=AOS8_CACHE_TTL_SECONDS=60
+# 若凭据文件不在 WorkingDirectory 下，请显式指定:
+# Environment=AOS8_DEVICES_CONFIG=/opt/aos8-mcp-server/aos8.devices.yaml
+ExecStart=/opt/aos8-mcp-server/scripts/start-aos8-mcp.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

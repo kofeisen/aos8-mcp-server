@@ -1,0 +1,20 @@
+# 使用方式：
+#   cp aos8.devices.example.yaml aos8.devices.yaml
+#   编辑 aos8.devices.yaml 填入真实 IP 与密码（该文件已加入 .gitignore）
+# 或通过环境变量 AOS8_DEVICES_CONFIG=/path/to/your.yaml 指定路径。
+
+verify_ssl: false
+
+mm:
+  ip: "10.0.50.1"
+  username: "admin"
+  password: "CHANGE_ME"
+
+# 按顺序尝试回落到 MD（与 MM 上 conductor 限制时的行为一致）。
+# 某台 MD 若省略 username / password，则使用与 mm 相同的账号。
+md:
+  - ip: "10.0.50.11"
+  - ip: "10.0.50.12"
+  # - ip: "10.0.50.13"
+  #   username: "other"
+  #   password: "other-secret"
