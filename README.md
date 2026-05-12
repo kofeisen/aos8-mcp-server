@@ -16,11 +16,20 @@
 
 ## 功能概要
 
-- **会话模型 B**：`aos8_session_create_from_config`（读本地 YAML）或 `aos8_session_create`（参数传入）登录 MM → 多次工具调用复用 `session_id` → `aos8_session_destroy` 注销并清缓存。
-- **执行策略**：默认在 **MM** 上执行；若响应中含 *This command is not applicable on conductor switch*，则按配置中 **MD 顺序** 在对应 MD 上登录并重试。
-- **领域工具**（均可选 `cli_suffix` 追加 `| include` 等）：`aos8_controllers`、`aos8_clients`、`aos8_aps`（`variant`）、`aos8_log`、`aos8_wlan`（`variant` + 可选 `profile_name`），另提供通用 `aos8_show`。
-- **响应**：始终包含 **`raw`**（设备返回解析结果），并附带 **`normalized`** 启发式摘要（不改变 `raw`）。
-- **缓存**：同 `session_id` + 目标 IP + 完整命令字符串，在进程内缓存一段时间（默认 60s，可用环境变量调整）。
+- **会话生命周期**：`aos8_session_create_from_config`（读本地 YAML，推荐）或 `aos8_session_create`（参数传入）登录 MM → 多次工具调用复用 `session_id` → `aos8_session_destroy` 注销并清缓存；新增 `aos8_session_status` 自检会话健康。
+- **执行策略**：默认在 **MM** 上执行；若响应中含 *This command is not applicable on conductor switch*，则按配置中 **MD 顺序** 自动回落。Token 过期时**自动重登一次**再重试。
+- **领域工具**（统一为 `variant + cli_suffix + command_override + use_cache + max_*` 的形态）：
+  - `aos8_controllers` / `aos8_clients` / `aos8_aps` / `aos8_wlan` / `aos8_log`
+  - `aos8_system`（version / license / cpuload / memory / storage / inventory / uptime / image_version …）
+  - `aos8_network`（vlan / port_status / ip_interface_brief / ip_route / ospf / arp / dhcp …）
+  - `aos8_aaa`（authentication-server all / server-group / state messages / 各类 profile …）
+  - `aos8_cluster`（lc-cluster group-membership / switches state / heartbeat / master-redundancy …）
+  - `aos8_rf`（arm rf-summary / monitor stats / bss-table / radio-summary …）
+- **组合诊断**：`aos8_ap_diagnose(ap_name)`、`aos8_client_diagnose(identifier)`、`aos8_health_overview()`，并行串好一组 show 并返回结构化要点。
+- **统一目录**：`aos8_catalog(domain=...)` 一次列出所有 domain/variant 与默认命令（取代旧的 `aos8_ap_show_variants` / `aos8_wlan_show_variants`）。
+- **响应**：始终包含 **`raw`**（设备返回解析结果）与 **`normalized`**（启发式摘要，常见表格类返回 `count + items`）。
+- **服务端裁剪**：`max_lines`（log 类，默认尾部 200 行）与 `max_rows`（表格类，默认 500 行）按需生效，AI 拿到的上下文不会被一条 `show log all` 灌爆。
+- **缓存分档**：`static`（默认 120s）/ `near_realtime`（默认 15s）/ `realtime`（默认 0s，不缓存）。各 variant 自带 tier，整体 TTL 可用环境变量调整。
 
 ## 建议的 MM 配置
 
@@ -47,7 +56,13 @@ chmod +x scripts/start-aos8-mcp.sh
 # 可选环境变量（脚本内已有默认值，也可在 systemd 里写 Environment=）
 export AOS8_MCP_HOST=0.0.0.0
 export AOS8_MCP_PORT=8765
-export AOS8_CACHE_TTL_SECONDS=60
+export AOS8_CACHE_TTL_SECONDS=15           # near_realtime 档默认 TTL（兼容旧名）
+export AOS8_CACHE_STATIC_TTL=120           # static 档（version / license 等）
+export AOS8_CACHE_REALTIME_TTL=0           # realtime 档（log / cpuload 等不缓存）
+export AOS8_LOG_DEFAULT_TAIL=200           # 大日志默认保留尾部行数
+export AOS8_TABLE_DEFAULT_CAP=500          # 表格类响应默认截断行数
+export AOS8_SESSION_IDLE_TIMEOUT_SECONDS=1800  # 空闲多久（秒）后自动登出并清缓存；0=禁用
+export AOS8_SESSION_IDLE_SCAN_SECONDS=60       # 后台扫描间隔
 export AOS8_DEVICES_CONFIG=/path/to/aos8.devices.yaml   # 可选
 
 ./scripts/start-aos8-mcp.sh
@@ -95,13 +110,30 @@ MCP Streamable HTTP 端点：`http://<主机>:<端口>/mcp`
 
 ### 扩展默认 show 命令
 
-- **通用领域**：在 `aos8_mcp/show_registry.py` 的 `DOMAIN_SPECS` 中增加或修改条目；`normalizer` 见 `aos8_mcp/normalize.py`。
-- **`show ap` 子命令**：在 `AP_SHOW_VARIANTS` 中维护 `(命令, normalizer, 英文描述)`，通过 `aos8_aps(..., variant="键名")` 调用；**`aos8_ap_show_variants`** 返回每键的 `command` 与 `description` 供选型。
-- **`show wlan` 子命令**：在 `WLAN_SHOW_VARIANTS` 中维护为与 AP 相同的 **`(command, normalizer, description)`**；`aos8_wlan(..., variant=..., profile_name=可选)`；**`aos8_wlan_show_variants`** 返回每键的 `command` 与 `description`。`ssid_profile` / `he_ssid_profile` / `ht_ssid_profile` 未传 `profile_name` 时默认追加 **`default`**。
+所有 `show` 预设都在 `aos8_mcp/show_registry.py` 的各 `*_PRESETS` 字典里维护，元素为 `ShowPreset(key, command, description, normalizer, cache_tier, needs_profile_name, profile_name_default)`：
+
+- 想给已有领域增加变体：把新行追加到 `AP_PRESETS` / `WLAN_PRESETS` / `SYSTEM_PRESETS` / `NETWORK_PRESETS` / `AAA_PRESETS` / `CLUSTER_PRESETS` / `RF_PRESETS` / `CONTROLLERS_PRESETS` / `CLIENTS_PRESETS` / `LOG_PRESETS` 即可，工具表面无需改动。
+- 想新增整组领域：建一个新的 `*_PRESETS`，再到 `DOMAINS` 字典里挂上去，并在 `server.py` 加一个对应的 `@mcp.tool()` 包一层 `_run_domain`。
+- 想加更结构化的归一化输出：在 `aos8_mcp/normalize.py` 的 `_TABLE_CANDIDATE_KEYS` 注册顶层 key 候选；如果是异形结构，按 `_ssid_profile` 模式新增一个 `_xxx` 函数即可。
 
 ### 典型调用顺序（给模型或操作说明）
 
 1. **`aos8_session_create_from_config`**（推荐）：可选 `config_path`；否则使用 `AOS8_DEVICES_CONFIG` 或 `./aos8.devices.yaml`。  
    或 **`aos8_session_create`**：在参数中传 `mm_ip`、`username`、`password`、`md_ips`、`verify_ssl`（**`false`** 跳过 TLS 校验，等价 `curl --insecure`）。
-2. 多次调用各领域工具或 `aos8_show`，均传入同一 `session_id`。
-3. `aos8_session_destroy`：`session_id`。
+2. 不熟悉可选项时先调一次 **`aos8_catalog`** 或 `aos8_catalog(domain="aps")` 看预设清单。
+3. 多次调用各领域工具或 `aos8_show`，均传入同一 `session_id`；模糊排错可直接用 **`aos8_ap_diagnose` / `aos8_client_diagnose` / `aos8_health_overview`** 一把抓。
+4. `aos8_session_destroy`：`session_id`。
+
+### 常用排障示例（给运维同事的"速查"）
+
+| 场景 | 工具调用 |
+| --- | --- |
+| 平台总览 | `aos8_health_overview(session_id)` |
+| AP 离线/状态 | `aos8_aps(session_id, variant="database", cli_suffix="\| include AP-M020")` 或 `aos8_ap_diagnose(session_id, ap_name="AP-M020")` |
+| 终端排查 | `aos8_client_diagnose(session_id, identifier="aa:bb:cc:dd:ee:ff")` |
+| 认证失败 | `aos8_aaa(session_id, variant="state_messages", cli_suffix="\| include <user_or_mac>")` |
+| 集群状态 | `aos8_cluster(session_id, variant="lc_cluster_group_membership")` |
+| 路由/L3 | `aos8_network(session_id, variant="ip_route")` |
+| 系统资源 | `aos8_system(session_id, variant="cpuload")` / `variant="memory"` |
+| RF 概览 | `aos8_rf(session_id, variant="arm_rf_summary")` |
+| 最近错误日志 | `aos8_log(session_id, variant="errorlog", max_lines=100)` |

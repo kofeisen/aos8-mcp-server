@@ -1,4 +1,9 @@
-"""HTTP client for AOS8 MM/MD login, logout, and showcommand API."""
+"""HTTP client for AOS8 MM/MD login, logout, and showcommand API.
+
+The client owns its own cookie jar and login tokens. Credentials are kept
+locally (in-process only) so an authenticated connection can re-login itself
+when the controller expires the session.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +20,16 @@ NOT_ON_CONDUCTOR_MARKERS = (
     "This command is not applicable on conductor",
 )
 
+# Body fragments / HTTP statuses that signal an expired or rejected token.
+_AUTH_HTTP_STATUSES = {401, 403}
+_AUTH_BODY_MARKERS = (
+    "you must authenticate yourself",
+    "authentication failed",
+    "session expired",
+    "not authorized",
+    "csrf",
+)
+
 
 @dataclass
 class LoginTokens:
@@ -24,6 +39,10 @@ class LoginTokens:
 
 class ArubaHttpError(RuntimeError):
     pass
+
+
+class ArubaAuthExpired(ArubaHttpError):
+    """Raised when the controller indicates the cached tokens are no longer valid."""
 
 
 def _base_url(host: str) -> str:
@@ -44,6 +63,19 @@ def _looks_like_not_on_conductor(payload: Any) -> bool:
     return any(m.lower() in lower for m in NOT_ON_CONDUCTOR_MARKERS)
 
 
+def _looks_like_auth_failure(status: int, payload: Any) -> bool:
+    if status in _AUTH_HTTP_STATUSES:
+        return True
+    blob = payload
+    if not isinstance(blob, str):
+        try:
+            blob = json.dumps(payload, ensure_ascii=False)
+        except (TypeError, ValueError):
+            blob = str(payload)
+    lower = blob.lower()
+    return any(m in lower for m in _AUTH_BODY_MARKERS)
+
+
 class ArubaDeviceClient:
     """One logical device (MM or MD IP) — owns cookie jar and tokens."""
 
@@ -58,9 +90,15 @@ class ArubaDeviceClient:
             follow_redirects=True,
         )
         self.tokens: LoginTokens | None = None
+        self._username: str | None = None
+        self._password: str | None = None
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+    @property
+    def is_authenticated(self) -> bool:
+        return self.tokens is not None
 
     async def login(self, username: str, password: str) -> dict[str, Any]:
         url = f"{self.base_url}/v1/api/login"
@@ -79,7 +117,16 @@ class ArubaDeviceClient:
         if not uid or not csrf:
             raise ArubaHttpError("Login response missing UIDARUBA or X-CSRF-Token")
         self.tokens = LoginTokens(uidaruba=str(uid), csrf=str(csrf))
+        self._username = username
+        self._password = password
         return body
+
+    async def relogin(self) -> None:
+        """Re-establish the session using the credentials supplied to ``login``."""
+        if self._username is None or self._password is None:
+            raise ArubaHttpError("Cannot re-login: credentials were never supplied")
+        self.tokens = None
+        await self.login(self._username, self._password)
 
     async def logout(self) -> None:
         if not self.tokens:
@@ -95,6 +142,7 @@ class ArubaDeviceClient:
         self.tokens = None
 
     async def show_command(self, command: str) -> tuple[int, Any]:
+        """Execute one ``show`` call. Raises ``ArubaAuthExpired`` for stale tokens."""
         if not self.tokens:
             raise ArubaHttpError("Not logged in; call login first")
         url = f"{self.base_url}/v1/configuration/showcommand"
@@ -104,6 +152,10 @@ class ArubaDeviceClient:
             headers={"X-CSRF-Token": self.tokens.csrf},
         )
         parsed = _parse_show_body(resp.text)
+        if _looks_like_auth_failure(resp.status_code, parsed):
+            raise ArubaAuthExpired(
+                f"Auth rejected (HTTP {resp.status_code}); credentials may have expired"
+            )
         return resp.status_code, parsed
 
 
