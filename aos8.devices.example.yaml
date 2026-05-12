@@ -1,7 +1,7 @@
-# 使用方式：
+# Usage:
 #   cp aos8.devices.example.yaml aos8.devices.yaml
-#   编辑 aos8.devices.yaml 填入真实 IP 与密码（该文件已加入 .gitignore）
-# 或通过环境变量 AOS8_DEVICES_CONFIG=/path/to/your.yaml 指定路径。
+#   Edit aos8.devices.yaml and fill in the real IP and password (this file is already in .gitignore)
+# Or specify the path through the environment variable AOS8_DEVICES_CONFIG=/path/to/your.yaml.
 
 verify_ssl: false
 
@@ -10,8 +10,8 @@ mm:
   username: "admin"
   password: "CHANGE_ME"
 
-# 按顺序尝试回落到 MD（与 MM 上 conductor 限制时的行为一致）。
-# 某台 MD 若省略 username / password，则使用与 mm 相同的账号。
+# Try falling back to MD in order (same behavior as on MM with conductor restrictions).
+# If a MD omits username / password, use the same account as MM.
 md:
   - ip: "10.0.50.11"
   - ip: "10.0.50.12"

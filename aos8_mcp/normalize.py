@@ -108,7 +108,6 @@ def _table_shape(
         rows = raw.get(ck)
         if isinstance(rows, list):
             return {"kind": out_key, "count": len(rows), "items": rows}
-    # 兜底：找一个最大的 list-of-dict
     fallback: list[Any] | None = None
     fallback_src: str | None = None
     for k, v in raw.items():

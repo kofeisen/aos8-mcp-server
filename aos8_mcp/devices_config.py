@@ -1,4 +1,4 @@
-"""从本地 YAML 加载 MM / MD 地址与凭据（不入库、不提交 git）。"""
+"""Load MM/MD addresses and credentials from a local YAML file."""
 
 from __future__ import annotations
 
@@ -41,18 +41,18 @@ def load_devices_config(path: Path | None = None) -> DevicesConfig:
     p = p.expanduser().resolve()
     if not p.is_file():
         raise FileNotFoundError(
-            f"未找到设备配置文件: {p}。可复制 aos8.devices.example.yaml 为 aos8.devices.yaml 并填写，"
-            f"或通过环境变量 AOS8_DEVICES_CONFIG 指定路径。"
+            f"Device config file not found: {p}. Copy aos8.devices.example.yaml to aos8.devices.yaml and fill in the credentials, "
+            f"or specify the path through the environment variable AOS8_DEVICES_CONFIG."
         )
     text = p.read_text(encoding="utf-8")
     data = yaml.safe_load(text)
     if not isinstance(data, dict):
-        raise ValueError(f"配置文件格式错误（应为 YAML 映射）: {p}")
+        raise ValueError(f"Invalid config file format (should be a YAML mapping): {p}")
     return DevicesConfig.model_validate(data)
 
 
 def resolve_md_logins(cfg: DevicesConfig) -> tuple[list[str], dict[str, tuple[str, str]]]:
-    """返回 (按顺序的 md ip 列表, 每个 ip 对应的 (username, password))。"""
+    """Return (ordered list of MD IPs, per-IP (username, password) overrides)."""
     order: list[str] = []
     logins: dict[str, tuple[str, str]] = {}
     for m in cfg.md:

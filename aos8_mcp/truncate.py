@@ -77,7 +77,7 @@ def _truncate_log_normalized(
         truncated["head"] = full_lines[:max_lines]
         truncated["tail"] = []
     else:
-        # 运维场景默认保留尾部 N 行
+        # Default to keeping the tail N lines in operational scenarios.
         truncated["tail"] = full_lines[-max_lines:]
         truncated["head"] = []
     return truncated
