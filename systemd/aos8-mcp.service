@@ -1,0 +1,20 @@
+[Unit]
+Description=AOS8 MCP Server (Streamable HTTP / Uvicorn)
+Documentation=file:///root/aos8-mcp-server/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/aos8-mcp-server
+# 可选：在 /etc/default/aos8-mcp 中设置 AOS8_MCP_HOST、AOS8_MCP_PORT、AOS8_DEVICES_CONFIG 等
+EnvironmentFile=-/etc/default/aos8-mcp
+ExecStart=/root/aos8-mcp-server/scripts/start-aos8-mcp.sh
+Restart=always
+RestartSec=5
+# 脚本内 exec 为 Python，便于 systemd 跟踪主进程
+KillSignal=SIGINT
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

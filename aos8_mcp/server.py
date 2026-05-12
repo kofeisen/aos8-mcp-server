@@ -40,15 +40,36 @@ _STATELESS_HTTP = os.environ.get("AOS8_MCP_STATELESS_HTTP", "").strip().lower() 
 
 store.cache.configure_ttl(_CACHE_TTL)
 
+
+def _coerce_optional_str(value: str | None) -> str | None:
+    """部分浏览器/MCP 前端会把未填字段序列成字面量 ``undefined``/``null``，避免拼进 show 或触发 JSON 解析错误。"""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return None
+    s = value.strip()
+    if not s:
+        return None
+    low = s.casefold()
+    if low in ("undefined", "null", "none"):
+        return None
+    return s
+
+
 mcp = FastMCP(
     "aos8-mcp-server",
     instructions=(
-        "Aruba AOS 8.x 只读 MCP：先 aos8_session_create_from_config（本地 aos8.devices.yaml）"
-        "或 aos8_session_create 登录 MM，再调用各领域 show；结束后 aos8_session_destroy。"
-        "默认在 MM 执行；若提示 conductor 不可用会自动按配置的 MD 顺序尝试。"
-        "建议在控制器上配置 #no paging 以避免分页。支持 show 后接 | include / exclude / begin 等过滤。"
-        "aos8_aps 支持 variant 选择多种 show ap 子命令；aos8_ap_show_variants 可列出全部键。"
-        "aos8_wlan 支持 variant 选择多种 show wlan 子命令；profile_name 可选；aos8_wlan_show_variants 列出键。"
+        "Aruba AOS 8.x 只读 MCP（设备数据必须通过 show 工具拉取，会话创建接口本身不含任何统计表）。"
+        "工作流（缺一不可）：(1) aos8_session_create_from_config 或 aos8_session_create，得到 session_id；"
+        "(2) 同一轮对话内继续调用数据工具并传入该 session_id，例如在线终端/用户数用 aos8_clients，"
+        "AP 列表用 aos8_aps，控制器列表用 aos8_controllers，日志用 aos8_log，WLAN 用 aos8_wlan，"
+        "任意 show 用 aos8_show；(3) 排障结束后 aos8_session_destroy(session_id)。"
+        "禁止仅凭步骤(1)的 JSON（仅有 mm_ip、session_id 等）回答「有多少终端/AP 在线」——必须先执行步骤(2)。"
+        "默认在 MM 执行 show；若提示 conductor 不可用会按配置的 MD 顺序回落。"
+        "建议在控制器上配置 #no paging；show 可接 | include / exclude / begin。"
+        "aos8_aps / aos8_wlan 的 variant 列表见 aos8_ap_show_variants、aos8_wlan_show_variants。"
+        "查某 AP 名下是否有终端：优先 aos8_clients + cli_suffix ``| include <AP名>``；看 AP 库条目用 aos8_aps variant=database 同样加 include。"
+        "可选字符串参数未使用时请省略键或传 null，勿传未定义变量以免请求体非合法 JSON。"
     ),
     host=_HOST,
     port=_PORT,
@@ -168,11 +189,14 @@ async def aos8_session_create(
 @mcp.tool()
 async def aos8_session_destroy(session_id: str) -> dict[str, Any]:
     """注销 MM 及已登录的 MD，并清除与该 session 关联的 show 缓存。"""
+    sid = _coerce_optional_str(session_id)
+    if not sid:
+        return {"ok": False, "error": "session_id 无效或未传。"}
     try:
-        await store.destroy(session_id)
+        await store.destroy(sid)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)}
-    return {"ok": True, "session_id": session_id}
+    return {"ok": True, "session_id": sid}
 
 
 @mcp.tool()
@@ -184,12 +208,17 @@ async def aos8_show(
     use_cache: bool = True,
 ) -> dict[str, Any]:
     """执行任意只读 show；target=mm 时沿用「MM 优先、必要时按 md_ips 回落 MD」策略。"""
-    cmd = command.strip()
+    sid = _coerce_optional_str(session_id)
+    if not sid:
+        return {"ok": False, "error": "session_id 无效或未传。"}
+    cmd_raw = _coerce_optional_str(command) or ""
+    cmd = cmd_raw.strip()
     err = _validate_show_command(cmd)
     if err:
         return {"ok": False, "error": err}
+    md_eff = _coerce_optional_str(md_ip)
     try:
-        raw = await store.show_on_target(session_id, cmd, target=target, md_ip=md_ip, use_cache=use_cache)
+        raw = await store.show_on_target(sid, cmd, target=target, md_ip=md_eff, use_cache=use_cache)
         return {"ok": True, **await _with_norm(raw, "generic")}
     except KeyError as e:
         return {"ok": False, "error": str(e)}
@@ -209,6 +238,18 @@ async def _domain_show(
     ap_variant: str | None = None,
     use_cache: bool = True,
 ) -> dict[str, Any]:
+    sid = _coerce_optional_str(session_id)
+    if not sid:
+        return {
+            "ok": False,
+            "error": "session_id 无效或未传。若前端报「undefined is not valid JSON」，多为请求体里拼进了未定义字段，请省略可选参数或传 null。",
+        }
+    cli_suffix = _coerce_optional_str(cli_suffix)
+    command_override = _coerce_optional_str(command_override)
+    wlan_profile_name = _coerce_optional_str(wlan_profile_name)
+    wlan_variant = _coerce_optional_str(wlan_variant)
+    ap_variant = _coerce_optional_str(ap_variant)
+
     spec = get_spec(domain)
     hint: NormalizerHint = extra_hint or spec.normalizer
     if command_override and command_override.strip():
@@ -236,7 +277,7 @@ async def _domain_show(
     if err:
         return {"ok": False, "error": err}
     try:
-        raw = await store.show_with_mm_then_md_fallback(session_id, cmd, use_cache=use_cache)
+        raw = await store.show_with_mm_then_md_fallback(sid, cmd, use_cache=use_cache)
         out = {"ok": True, "domain": domain, **await _with_norm(raw, hint)}
         if domain == "aps" and ap_variant and not (command_override and command_override.strip()):
             out["ap_variant"] = ap_variant.strip()
@@ -267,7 +308,10 @@ async def aos8_clients(
     command_override: str | None = None,
     use_cache: bool = True,
 ) -> dict[str, Any]:
-    """默认 show global-user-table list。"""
+    """默认 show global-user-table list。
+
+    查某台 AP 下是否有关联终端：传 cli_suffix 为 ``| include AP-M020``（把 AP-M020 换成实际名称；与控制器上 ``#include`` 行为一致）。
+    """
     return await _domain_show(session_id, "clients", cli_suffix, command_override, use_cache=use_cache)
 
 
@@ -289,8 +333,11 @@ async def aos8_aps(
 
     各 variant 的 CLI 与英文说明见 **aos8_ap_show_variants**；定义在 ``aos8_mcp/show_registry.py`` 的 ``AP_SHOW_VARIANTS``。
     仍可通过 command_override 传入任意 ``show ap ...``（此时忽略 variant）。
+    只看某台 AP 在库中一行：variant=database，cli_suffix=``| include AP-M020``。
     """
-    ap_v = None if (command_override and command_override.strip()) else variant
+    ov = _coerce_optional_str(command_override)
+    v_eff = _coerce_optional_str(variant) or "database"
+    ap_v = None if ov else v_eff
     return await _domain_show(
         session_id,
         "aps",
@@ -331,7 +378,9 @@ async def aos8_wlan(
 
     仍可用 command_override 传入完整 ``show wlan ...``（此时忽略 variant / profile_name）。
     """
-    wlan_v = None if (command_override and command_override.strip()) else variant
+    ov = _coerce_optional_str(command_override)
+    v_eff = _coerce_optional_str(variant) or "virtual_ap"
+    wlan_v = None if ov else v_eff
     return await _domain_show(
         session_id,
         "wlan",
@@ -344,4 +393,28 @@ async def aos8_wlan(
 
 
 def run() -> None:
-    mcp.run(transport="streamable-http")
+    """Streamable HTTP；外层 CORS 放行任意来源，便于浏览器内其他业务页直连。"""
+    import anyio
+    import uvicorn
+    from starlette.middleware.cors import CORSMiddleware
+
+    inner = mcp.streamable_http_app()
+    app = CORSMiddleware(
+        inner,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+        allow_credentials=False,
+        expose_headers=["mcp-session-id", "mcp-protocol-version"],
+    )
+
+    async def _serve() -> None:
+        config = uvicorn.Config(
+            app,
+            host=mcp.settings.host,
+            port=mcp.settings.port,
+            log_level=mcp.settings.log_level.lower(),
+        )
+        await uvicorn.Server(config).serve()
+
+    anyio.run(_serve)
