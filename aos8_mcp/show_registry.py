@@ -70,10 +70,42 @@ def normalize_key(key: str) -> str:
 # Domain: controllers (mobility hierarchy on MM)
 # ---------------------------------------------------------------------------
 CONTROLLERS_PRESETS: dict[str, ShowPreset] = {
+    # --- show switches family (MM-side hierarchy) ----------------------
     "switches": ShowPreset(
         key="switches",
         command="show switches",
         description="All controllers (MM/MD) registered in the hierarchy.",
+        normalizer="switches",
+        cache_tier="near_realtime",
+    ),
+    "switches_all": ShowPreset(
+        key="switches_all",
+        command="show switches all",
+        description="Full list of all managed devices.",
+        normalizer="switches",
+        cache_tier="near_realtime",
+    ),
+    "switches_debug": ShowPreset(
+        key="switches_debug",
+        command="show switches debug",
+        description=(
+            "Switch hierarchy with extra debug info: MAC, node-path, uptime,"
+            " crash info, license, release type."
+        ),
+        normalizer="switches",
+        cache_tier="near_realtime",
+    ),
+    "switches_regulatory": ShowPreset(
+        key="switches_regulatory",
+        command="show switches regulatory",
+        description="Active regulatory file (version / build) per controller.",
+        normalizer="switches",
+        cache_tier="static",
+    ),
+    "switches_summary": ShowPreset(
+        key="switches_summary",
+        command="show switches summary",
+        description="Status summary of all managed devices.",
         normalizer="switches",
         cache_tier="near_realtime",
     ),
@@ -84,20 +116,66 @@ CONTROLLERS_PRESETS: dict[str, ShowPreset] = {
         normalizer="switches",
         cache_tier="near_realtime",
     ),
+    "switches_state_complete": ShowPreset(
+        key="switches_state_complete",
+        command="show switches state complete",
+        description="Controllers whose configuration update has completed.",
+        normalizer="switches",
+        cache_tier="near_realtime",
+    ),
+    "switches_state_incomplete": ShowPreset(
+        key="switches_state_incomplete",
+        command="show switches state incomplete",
+        description="Controllers whose configuration update is incomplete.",
+        normalizer="switches",
+        cache_tier="near_realtime",
+    ),
+    "switches_state_inprogress": ShowPreset(
+        key="switches_state_inprogress",
+        command="show switches state inprogress",
+        description="Controllers currently rolling out a configuration update.",
+        normalizer="switches",
+        cache_tier="near_realtime",
+    ),
+    "switches_state_required": ShowPreset(
+        key="switches_state_required",
+        command="show switches state required",
+        description="Controllers that still require a configuration update.",
+        normalizer="switches",
+        cache_tier="near_realtime",
+    ),
+
+    # --- local controller (the one we're logged into) -----------------
     "switch_software": ShowPreset(
         key="switch_software",
         command="show switch software",
-        description="Software version installed on the local controller.",
+        description=(
+            "Software running on the local controller: model, ArubaOS"
+            " version, build date, uptime, reboot cause, supervisor card."
+        ),
         normalizer="generic",
         cache_tier="static",
     ),
     "switch_ip": ShowPreset(
         key="switch_ip",
         command="show switch ip",
-        description="Controller management IP and related parameters.",
+        description="Local controller management IP and related parameters.",
         normalizer="generic",
         cache_tier="static",
     ),
+}
+
+# Convenience aliases for the controllers domain.
+_CONTROLLERS_ALIASES: dict[str, str] = {
+    "all": "switches_all",
+    "debug": "switches_debug",
+    "regulatory": "switches_regulatory",
+    "summary": "switches_summary",
+    "state_down": "switches_state_down",
+    "state_complete": "switches_state_complete",
+    "state_incomplete": "switches_state_incomplete",
+    "state_inprogress": "switches_state_inprogress",
+    "state_required": "switches_state_required",
 }
 
 # ---------------------------------------------------------------------------
@@ -150,12 +228,25 @@ CLIENTS_PRESETS: dict[str, ShowPreset] = {
 
 # ---------------------------------------------------------------------------
 # Domain: log
+#
+# Every category mirrors an official ``show log <category>`` subcommand:
+#   all / ap-debug / arm / arm-user-debug / errorlog / network / peer-debug
+#   / security / system / user / user-debug / wireless
+# The trailing ``all`` keyword pulls in rotated files (e.g., security log +
+# security.1, security.2, ...). aos8_log also supports a device-side
+# ``tail=<N>`` parameter that appends ``<N>`` to the CLI so the controller
+# itself trims to the last N lines — much cheaper than fetching the full
+# buffer and trimming server-side.
 # ---------------------------------------------------------------------------
 LOG_PRESETS: dict[str, ShowPreset] = {
     "all": ShowPreset(
         key="all",
         command="show log all",
-        description="Full controller log buffer (large; prefer cli_suffix or tail_lines).",
+        description=(
+            "Full controller log buffer across every category. Large by"
+            " default — use tail=<N> for device-side tail and / or"
+            " cli_suffix / match=<token> for grep-style filtering."
+        ),
         normalizer="log_text",
         cache_tier="realtime",
     ),
@@ -169,21 +260,21 @@ LOG_PRESETS: dict[str, ShowPreset] = {
     "security": ShowPreset(
         key="security",
         command="show log security all",
-        description="Security-related log entries.",
+        description="Security log entries (auth, captive portal, role transitions).",
         normalizer="log_text",
         cache_tier="realtime",
     ),
     "system": ShowPreset(
         key="system",
         command="show log system all",
-        description="System log subset.",
+        description="System log entries.",
         normalizer="log_text",
         cache_tier="realtime",
     ),
     "user": ShowPreset(
         key="user",
         command="show log user all",
-        description="User-facing log entries (auth, association).",
+        description="User-facing log entries (association, authentication).",
         normalizer="log_text",
         cache_tier="realtime",
     ),
@@ -191,6 +282,50 @@ LOG_PRESETS: dict[str, ShowPreset] = {
         key="wireless",
         command="show log wireless all",
         description="Wireless subsystem log entries.",
+        normalizer="log_text",
+        cache_tier="realtime",
+    ),
+    "ap_debug": ShowPreset(
+        key="ap_debug",
+        command="show log ap-debug all",
+        description="AP-side debug logs collected by the controller.",
+        normalizer="log_text",
+        cache_tier="realtime",
+    ),
+    "arm": ShowPreset(
+        key="arm",
+        command="show log arm all",
+        description="ARM (Adaptive Radio Management) log entries.",
+        normalizer="log_text",
+        cache_tier="realtime",
+    ),
+    "arm_user_debug": ShowPreset(
+        key="arm_user_debug",
+        command="show log arm-user-debug all",
+        description="ARM user-debug log entries (per-client RF debug capture).",
+        normalizer="log_text",
+        cache_tier="realtime",
+    ),
+    "network": ShowPreset(
+        key="network",
+        command="show log network all",
+        description="Network subsystem log entries (routing, interfaces, ARP).",
+        normalizer="log_text",
+        cache_tier="realtime",
+    ),
+    "peer_debug": ShowPreset(
+        key="peer_debug",
+        command="show log peer-debug all",
+        description="Peer / cluster debug log entries.",
+        normalizer="log_text",
+        cache_tier="realtime",
+    ),
+    "user_debug": ShowPreset(
+        key="user_debug",
+        command="show log user-debug all",
+        description=(
+            "User debug log entries (set by ``logging level debugging user mac/ip ...``)."
+        ),
         normalizer="log_text",
         cache_tier="realtime",
     ),
@@ -629,7 +764,32 @@ SYSTEM_PRESETS: dict[str, ShowPreset] = {
     "version": ShowPreset(
         key="version",
         command="show version",
-        description="Controller software/hardware version.",
+        description="Controller software/hardware version (short banner).",
+        cache_tier="static",
+    ),
+    "switchinfo": ShowPreset(
+        key="switchinfo",
+        command="show switchinfo",
+        description=(
+            "Comprehensive local-controller identity dump: hostname, system"
+            " time, OS version, uptime, reboot cause, management IP, switch"
+            " role and save/crash status. Single-call platform snapshot."
+        ),
+        cache_tier="near_realtime",
+    ),
+    "switch_software": ShowPreset(
+        key="switch_software",
+        command="show switch software",
+        description=(
+            "Software running on the local controller (model, ArubaOS version,"
+            " build date, uptime, reboot cause, supervisor card)."
+        ),
+        cache_tier="static",
+    ),
+    "switch_ip": ShowPreset(
+        key="switch_ip",
+        command="show switch ip",
+        description="Local controller management IP and related parameters.",
         cache_tier="static",
     ),
     "inventory": ShowPreset(
@@ -833,6 +993,63 @@ AAA_PRESETS: dict[str, ShowPreset] = {
         description="Captive portal authentication profiles.",
         cache_tier="static",
     ),
+    "authentication_dot1x_countermeasures": ShowPreset(
+        key="authentication_dot1x_countermeasures",
+        command="show aaa authentication dot1x countermeasures",
+        description="802.1X anti-cloning / countermeasure runtime view.",
+        cache_tier="near_realtime",
+    ),
+    "authentication_stateful_dot1x": ShowPreset(
+        key="authentication_stateful_dot1x",
+        command="show aaa authentication stateful-dot1x",
+        description="Stateful 802.1X session summary.",
+        cache_tier="near_realtime",
+    ),
+    "authentication_stateful_dot1x_config_entries": ShowPreset(
+        key="authentication_stateful_dot1x_config_entries",
+        command="show aaa authentication stateful-dot1x config-entries",
+        description="Stateful 802.1X profile configuration entries.",
+        cache_tier="static",
+    ),
+    "authentication_server_radius": ShowPreset(
+        key="authentication_server_radius",
+        command="show aaa authentication-server radius",
+        description=(
+            "Configured RADIUS servers; pass arg=<server-name> for a single server "
+            "(CLI-Bank: show aaa authentication-server radius <name>)."
+        ),
+        normalizer="aaa_servers",
+        cache_tier="near_realtime",
+    ),
+    "authentication_server_radius_statistics": ShowPreset(
+        key="authentication_server_radius_statistics",
+        command="show aaa authentication-server radius statistics",
+        description="RADIUS request/response statistics.",
+        cache_tier="near_realtime",
+    ),
+    "authentication_server_radius_radsec_status": ShowPreset(
+        key="authentication_server_radius_radsec_status",
+        command="show aaa authentication-server radius radsec status",
+        description="RadSec (TLS) session status for RADIUS.",
+        cache_tier="near_realtime",
+    ),
+}
+
+_AAA_ALIASES: dict[str, str] = {
+    "auth_servers": "authentication_server_all",
+    "servers_all": "authentication_server_all",
+    "radius": "authentication_server_radius",
+    "radius_servers": "authentication_server_radius",
+    "radius_statistics": "authentication_server_radius_statistics",
+    "radius_radsec": "authentication_server_radius_radsec_status",
+    "radius_radsec_status": "authentication_server_radius_radsec_status",
+    "dot1x": "authentication_dot1x",
+    "mac_auth": "authentication_mac",
+    "cp": "authentication_captive_portal",
+    "captive": "authentication_captive_portal",
+    "stateful_dot1x": "authentication_stateful_dot1x",
+    "stateful_dot1x_config": "authentication_stateful_dot1x_config_entries",
+    "dot1x_countermeasures": "authentication_dot1x_countermeasures",
 }
 
 # ---------------------------------------------------------------------------
@@ -1037,9 +1254,15 @@ _CLUSTER_ALIASES: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Domain: rf  (curated RF monitoring subset)
+# Domain: rf
+#
+# Two families:
+#   * Operational monitoring — ``show ap arm …``, ``show ap monitor …``, radio tables.
+#   * RF configuration (official ``show rf`` umbrella — Mobility Conductor) —
+#     AM scan / ARM / radio profiles / spectrum / optimization / thresholds.
 # ---------------------------------------------------------------------------
 RF_PRESETS: dict[str, ShowPreset] = {
+    # --- operational monitoring ----------------------------------------
     "arm_rf_summary": ShowPreset(
         key="arm_rf_summary",
         command="show ap arm rf-summary",
@@ -1080,6 +1303,197 @@ RF_PRESETS: dict[str, ShowPreset] = {
         description="ARM scan times per radio (helpful for off-channel scan tuning).",
         cache_tier="near_realtime",
     ),
+
+    # --- show rf <profile> (AOS 8 CLI-Bank sh-rf.htm) --------------------
+    "rf_am_scan_profile": ShowPreset(
+        key="rf_am_scan_profile",
+        command="show rf am-scan-profile",
+        description="Air Monitor (AM) scanning profile configuration.",
+        cache_tier="static",
+    ),
+    "rf_arm_profile": ShowPreset(
+        key="rf_arm_profile",
+        command="show rf arm-profile",
+        description="Adaptive Radio Management (ARM) profile configuration.",
+        cache_tier="static",
+    ),
+    "rf_arm_rf_domain_profile": ShowPreset(
+        key="rf_arm_rf_domain_profile",
+        command="show rf arm-rf-domain-profile",
+        description="ARM RF domain profile.",
+        cache_tier="static",
+    ),
+    "rf_dot11_60ghz_radio_profile": ShowPreset(
+        key="rf_dot11_60ghz_radio_profile",
+        command="show rf dot11-60GHz-radio-profile",
+        description="802.11ad / 60 GHz radio profile.",
+        cache_tier="static",
+    ),
+    "rf_dot11_6ghz_radio_profile": ShowPreset(
+        key="rf_dot11_6ghz_radio_profile",
+        command="show rf dot11-6GHz-radio-profile",
+        description="802.11ax 6 GHz radio profile.",
+        cache_tier="static",
+    ),
+    "rf_dot11a_radio_profile": ShowPreset(
+        key="rf_dot11a_radio_profile",
+        command="show rf dot11a-radio-profile",
+        description="802.11a/5 GHz radio profile.",
+        cache_tier="static",
+    ),
+    "rf_dot11a_secondary_radio_profile": ShowPreset(
+        key="rf_dot11a_secondary_radio_profile",
+        command="show rf dot11a-secondary-radio-profile",
+        description="802.11a secondary radio profile.",
+        cache_tier="static",
+    ),
+    "rf_dot11g_radio_profile": ShowPreset(
+        key="rf_dot11g_radio_profile",
+        command="show rf dot11g-radio-profile",
+        description="802.11b/g/2.4 GHz radio profile.",
+        cache_tier="static",
+    ),
+    "rf_event_thresholds_profile": ShowPreset(
+        key="rf_event_thresholds_profile",
+        command="show rf event-thresholds-profile",
+        description="RF event thresholds profile.",
+        cache_tier="static",
+    ),
+    "rf_ht_radio_profile": ShowPreset(
+        key="rf_ht_radio_profile",
+        command="show rf ht-radio-profile",
+        description="802.11n high-throughput radio profile.",
+        cache_tier="static",
+    ),
+    "rf_optimization_profile": ShowPreset(
+        key="rf_optimization_profile",
+        command="show rf optimization-profile",
+        description="RF optimization profile.",
+        cache_tier="static",
+    ),
+    "rf_spectrum_profile": ShowPreset(
+        key="rf_spectrum_profile",
+        command="show rf spectrum-profile",
+        description="Spectrum analysis profile.",
+        cache_tier="static",
+    ),
+}
+
+_RF_ALIASES: dict[str, str] = {
+    # Map hyphenated doc names / short forms to canonical preset keys.
+    "rf_summary": "arm_rf_summary",
+    "am_scan_profile": "rf_am_scan_profile",
+    "arm_profile": "rf_arm_profile",
+    "arm_rf_domain_profile": "rf_arm_rf_domain_profile",
+    "dot11_60ghz_radio_profile": "rf_dot11_60ghz_radio_profile",
+    "dot11_6ghz_radio_profile": "rf_dot11_6ghz_radio_profile",
+    "dot11a_radio_profile": "rf_dot11a_radio_profile",
+    "dot11a_secondary_radio_profile": "rf_dot11a_secondary_radio_profile",
+    "dot11g_radio_profile": "rf_dot11g_radio_profile",
+    "event_thresholds_profile": "rf_event_thresholds_profile",
+    "ht_radio_profile": "rf_ht_radio_profile",
+    "optimization_profile": "rf_optimization_profile",
+    "spectrum_profile": "rf_spectrum_profile",
+}
+
+
+# ---------------------------------------------------------------------------
+# Domain: airmatch  (AirMatch RF automation — ``show airmatch …``)
+#
+# Commands run on Mobility Conductor (enable/config). Use ``arg`` for trailing
+# tokens (optimization sequence number, ``band 5 GHz``, ``mac <mac>``,
+# ``switch-ip <ip>``, ``sort-by …``, ``advanced partition``, ``last``, etc.).
+# ---------------------------------------------------------------------------
+AIRMATCH_PRESETS: dict[str, ShowPreset] = {
+    "profile": ShowPreset(
+        key="profile",
+        command="show airmatch profile",
+        description=(
+            "AirMatch profile: schedule, deploy-hour, quality-threshold, etc."
+        ),
+        cache_tier="static",
+    ),
+    "optimization": ShowPreset(
+        key="optimization",
+        command="show airmatch optimization",
+        description=(
+            "Recent AirMatch optimization jobs; append arg=<seq> for per-radio"
+            " channel/EIRP plan for that solution."
+        ),
+        cache_tier="near_realtime",
+    ),
+    "solution_list_all": ShowPreset(
+        key="solution_list_all",
+        command="show airmatch solution list-all",
+        description="AirMatch solution history for all radios (band, radio MAC, chan, EIRP, AP name).",
+        cache_tier="near_realtime",
+    ),
+    "solution": ShowPreset(
+        key="solution",
+        command="show airmatch solution",
+        description=(
+            "AirMatch solution scoped by AP/radio/switch. Pass ap_name=… or"
+            " arg='band 5 GHz' / 'mac <radiomac>' / 'switch-ip <ip>'."
+        ),
+        cache_tier="near_realtime",
+    ),
+    "ap_partition_status_detail": ShowPreset(
+        key="ap_partition_status_detail",
+        command="show airmatch ap-partition status detail",
+        description="Cluster-manager AP partition status (detail).",
+        cache_tier="near_realtime",
+    ),
+    "debug_apinfo": ShowPreset(
+        key="debug_apinfo",
+        command="show airmatch debug apinfo",
+        description=(
+            "AirMatch debug snapshot for an AP. Pass ap_name=… or"
+            " arg='ethmac …' / 'radiomac …'."
+        ),
+        cache_tier="near_realtime",
+    ),
+    "debug_history": ShowPreset(
+        key="debug_history",
+        command="show airmatch debug history",
+        description=(
+            "Channel/bandwidth/EIRP/mode change history for an AP radio."
+            " Pass ap_name=… or arg='mac <radiomac>'."
+        ),
+        cache_tier="near_realtime",
+    ),
+    "debug_db_dump_status": ShowPreset(
+        key="debug_db_dump_status",
+        command="show airmatch debug db-dump status",
+        description="Status of the AirMatch debug DB dump (SUCCESS/fail, timestamps).",
+        cache_tier="near_realtime",
+    ),
+    "debug_optimization": ShowPreset(
+        key="debug_optimization",
+        command="show airmatch debug optimization",
+        description=(
+            "Debug view of AirMatch optimizations; arg examples: 'last', "
+            "'77', 'advanced partition', '77 sort-by ap-name descending'."
+        ),
+        cache_tier="near_realtime",
+    ),
+    "debug_client_history": ShowPreset(
+        key="debug_client_history",
+        command="show airmatch debug client-history",
+        description="AirMatch client-count debug for an AP (ap_name or arg='mac …').",
+        cache_tier="near_realtime",
+    ),
+}
+
+_AIRMATCH_ALIASES: dict[str, str] = {
+    "opt": "optimization",
+    "solution_all": "solution_list_all",
+    "partition": "ap_partition_status_detail",
+    "ap_partition": "ap_partition_status_detail",
+    "db_dump_status": "debug_db_dump_status",
+    "dbg_opt": "debug_optimization",
+    "dbg_apinfo": "debug_apinfo",
+    "dbg_history": "debug_history",
+    "dbg_client_history": "debug_client_history",
 }
 
 
@@ -1565,6 +1979,15 @@ DATAPATH_PRESETS: dict[str, ShowPreset] = {
         description="Datapath heartbeat stats (controller-side).",
         cache_tier="realtime",
     ),
+    "utilization": ShowPreset(
+        key="utilization",
+        command="show datapath utilization",
+        description=(
+            "Per-datapath-CPU utilization by CPU ID (1 s, 4 s, and 64 s windows). "
+            "Primary CLI for datapath forwarding-plane CPU load (CLI-Bank: utilization)."
+        ),
+        cache_tier="realtime",
+    ),
 
     # --- acl / ipsec-map / misc ---------------------------------------
     "acl": ShowPreset(
@@ -1599,6 +2022,9 @@ _DATAPATH_ALIASES: dict[str, str] = {
     "sessions": "session",
     "users": "user",
     "vlans": "vlan",
+    "cpu": "utilization",
+    "cpu_utilization": "utilization",
+    "datapath_cpu": "utilization",
 }
 
 
@@ -1621,7 +2047,8 @@ DOMAINS: dict[str, DomainSpec] = {
         domain="controllers",
         default_variant="switches",
         presets=CONTROLLERS_PRESETS,
-        description="Controller hierarchy (``show switches`` family).",
+        aliases=_CONTROLLERS_ALIASES,
+        description="Controller hierarchy (``show switches`` family + local-controller info).",
     ),
     "clients": DomainSpec(
         domain="clients",
@@ -1664,7 +2091,12 @@ DOMAINS: dict[str, DomainSpec] = {
         domain="aaa",
         default_variant="state_messages",
         presets=AAA_PRESETS,
-        description="AAA servers, profiles, and runtime state.",
+        aliases=_AAA_ALIASES,
+        description=(
+            "AAA authentication servers, profiles, and runtime state "
+            "(``show aaa authentication-server …``, ``show aaa authentication …``, "
+            "``show aaa state …``)."
+        ),
     ),
     "cluster": DomainSpec(
         domain="cluster",
@@ -1681,7 +2113,21 @@ DOMAINS: dict[str, DomainSpec] = {
         domain="rf",
         default_variant="arm_rf_summary",
         presets=RF_PRESETS,
-        description="Curated RF monitoring views.",
+        aliases=_RF_ALIASES,
+        description=(
+            "RF monitoring (``show ap arm …``, radio tables) plus RF configuration"
+            " profiles (``show rf …``, Mobility Conductor)."
+        ),
+    ),
+    "airmatch": DomainSpec(
+        domain="airmatch",
+        default_variant="optimization",
+        presets=AIRMATCH_PRESETS,
+        aliases=_AIRMATCH_ALIASES,
+        description=(
+            "AirMatch (``show airmatch …``): optimization jobs, solutions,"
+            " profile, partition, and debug views on Mobility Conductor."
+        ),
     ),
     "datapath": DomainSpec(
         domain="datapath",
@@ -1690,7 +2136,8 @@ DOMAINS: dict[str, DomainSpec] = {
         aliases=_DATAPATH_ALIASES,
         description=(
             "``show datapath *`` forwarding-plane diagnostics for traffic-related"
-            " troubleshooting (bridge / cluster / session / tunnel / user / vlan / ...)."
+            " troubleshooting (``utilization`` for datapath CPU load; bridge / cluster /"
+            " session / tunnel / user / vlan / …)."
         ),
     ),
 }

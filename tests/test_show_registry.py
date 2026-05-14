@@ -33,6 +33,7 @@ def test_all_expected_domains_present() -> None:
         "aaa",
         "cluster",
         "rf",
+        "airmatch",
         "datapath",
     }
     assert expected.issubset(DOMAINS.keys())
@@ -101,12 +102,40 @@ def test_full_catalog_contains_meta_and_variants() -> None:
     ("domain", "variant", "expected_cmd"),
     [
         ("controllers", "switches", "show switches"),
+        ("controllers", "switches_all", "show switches all"),
+        ("controllers", "switches_debug", "show switches debug"),
+        ("controllers", "switches_regulatory", "show switches regulatory"),
+        ("controllers", "switches_summary", "show switches summary"),
+        ("controllers", "switches_state_complete", "show switches state complete"),
+        ("controllers", "switches_state_inprogress", "show switches state inprogress"),
+        ("controllers", "switches_state_required", "show switches state required"),
+        ("system", "switchinfo", "show switchinfo"),
+        ("system", "switch_software", "show switch software"),
+        ("system", "switch_ip", "show switch ip"),
         ("clients", "global_user_table_list", "show global-user-table list"),
         ("aps", "database", "show ap database"),
         ("wlan", "virtual_ap", "show wlan virtual-ap"),
         ("system", "license_summary", "show license summary"),
         ("network", "ip_route", "show ip route"),
         ("aaa", "authentication_server_all", "show aaa authentication-server all"),
+        ("aaa", "authentication_dot1x_countermeasures", "show aaa authentication dot1x countermeasures"),
+        ("aaa", "authentication_stateful_dot1x", "show aaa authentication stateful-dot1x"),
+        (
+            "aaa",
+            "authentication_stateful_dot1x_config_entries",
+            "show aaa authentication stateful-dot1x config-entries",
+        ),
+        ("aaa", "authentication_server_radius", "show aaa authentication-server radius"),
+        (
+            "aaa",
+            "authentication_server_radius_statistics",
+            "show aaa authentication-server radius statistics",
+        ),
+        (
+            "aaa",
+            "authentication_server_radius_radsec_status",
+            "show aaa authentication-server radius radsec status",
+        ),
         ("cluster", "lc_cluster_group_membership", "show lc-cluster group-membership"),
         ("cluster", "lc_cluster_heartbeat_counters", "show lc-cluster heartbeat counters"),
         ("cluster", "lc_cluster_load_distribution_ap", "show lc-cluster load distribution ap"),
@@ -115,18 +144,43 @@ def test_full_catalog_contains_meta_and_variants() -> None:
         ("cluster", "datapath_cluster", "show datapath cluster"),
         ("cluster", "datapath_cluster_details", "show datapath cluster details"),
         ("rf", "arm_rf_summary", "show ap arm rf-summary"),
+        ("rf", "rf_arm_profile", "show rf arm-profile"),
+        ("rf", "rf_spectrum_profile", "show rf spectrum-profile"),
+        ("rf", "rf_dot11a_radio_profile", "show rf dot11a-radio-profile"),
         ("log", "errorlog", "show log errorlog all"),
+        ("log", "ap_debug", "show log ap-debug all"),
+        ("log", "arm_user_debug", "show log arm-user-debug all"),
+        ("log", "network", "show log network all"),
+        ("log", "peer_debug", "show log peer-debug all"),
+        ("log", "user_debug", "show log user-debug all"),
         ("datapath", "tunnel", "show datapath tunnel"),
         ("datapath", "tunnel_counters", "show datapath tunnel counters"),
         ("datapath", "bridge", "show datapath bridge"),
+        ("datapath", "utilization", "show datapath utilization"),
         ("datapath", "session_session_id", "show datapath session session-id"),
         ("datapath", "vlan_table", "show datapath vlan table"),
+        ("airmatch", "optimization", "show airmatch optimization"),
+        ("airmatch", "solution_list_all", "show airmatch solution list-all"),
+        ("airmatch", "debug_db_dump_status", "show airmatch debug db-dump status"),
+        ("airmatch", "debug_optimization", "show airmatch debug optimization"),
     ],
 )
 def test_known_presets_have_expected_commands(
     domain: str, variant: str, expected_cmd: str
 ) -> None:
     assert resolve_preset(domain, variant).command == expected_cmd
+
+
+def test_aaa_aliases_resolve_to_canonical_keys() -> None:
+    assert resolve_preset("aaa", "auth_servers").key == "authentication_server_all"
+    assert resolve_preset("aaa", "radius").key == "authentication_server_radius"
+    assert resolve_preset("aaa", "radius_statistics").key == "authentication_server_radius_statistics"
+    assert resolve_preset("aaa", "radius_radsec").key == "authentication_server_radius_radsec_status"
+    assert resolve_preset("aaa", "dot1x").key == "authentication_dot1x"
+    assert resolve_preset("aaa", "cp").key == "authentication_captive_portal"
+    assert resolve_preset("aaa", "stateful_dot1x_config").key == (
+        "authentication_stateful_dot1x_config_entries"
+    )
 
 
 def test_cluster_aliases_resolve_to_canonical_keys() -> None:
@@ -136,6 +190,87 @@ def test_cluster_aliases_resolve_to_canonical_keys() -> None:
     assert resolve_preset("cluster", "load_client").key == "lc_cluster_load_distribution_client"
     assert resolve_preset("cluster", "bucket_essid").key == "lc_cluster_bucket_distribution_essid"
     assert resolve_preset("cluster", "dp_cluster_details").key == "datapath_cluster_details"
+
+
+def test_controllers_short_aliases_resolve_to_canonical_keys() -> None:
+    for short, expected in (
+        ("all", "switches_all"),
+        ("debug", "switches_debug"),
+        ("regulatory", "switches_regulatory"),
+        ("summary", "switches_summary"),
+        ("state_down", "switches_state_down"),
+        ("state_inprogress", "switches_state_inprogress"),
+        ("state_required", "switches_state_required"),
+    ):
+        assert resolve_preset("controllers", short).key == expected
+
+
+def test_system_local_box_presets_use_correct_commands() -> None:
+    """switchinfo / switch_software / switch_ip should be reachable via aos8_system."""
+    assert resolve_preset("system", "switchinfo").command == "show switchinfo"
+    assert resolve_preset("system", "switch_software").command == "show switch software"
+    assert resolve_preset("system", "switch_ip").command == "show switch ip"
+
+
+def test_airmatch_aliases_resolve() -> None:
+    assert resolve_preset("airmatch", "opt").key == "optimization"
+    assert resolve_preset("airmatch", "solution_all").key == "solution_list_all"
+    assert resolve_preset("airmatch", "partition").key == "ap_partition_status_detail"
+    assert resolve_preset("airmatch", "dbg_opt").key == "debug_optimization"
+
+
+def test_every_airmatch_preset_starts_with_show_airmatch() -> None:
+    from aos8_mcp.show_registry import AIRMATCH_PRESETS
+
+    for key, preset in AIRMATCH_PRESETS.items():
+        assert preset.command.startswith("show airmatch "), (
+            f"{key}: expected 'show airmatch …', got {preset.command!r}"
+        )
+
+
+def test_rf_hyphenated_doc_names_resolve_via_aliases() -> None:
+    """CLI-Bank lists hyphenated parameter names; normalize_key + aliases map them."""
+    assert resolve_preset("rf", "arm-profile").key == "rf_arm_profile"
+    assert resolve_preset("rf", "spectrum-profile").key == "rf_spectrum_profile"
+    assert resolve_preset("rf", "arm_profile").key == "rf_arm_profile"
+
+
+def test_rf_summary_alias_points_to_arm_rf_summary() -> None:
+    assert resolve_preset("rf", "rf_summary").key == "arm_rf_summary"
+
+
+def test_every_show_rf_preset_has_correct_prefix() -> None:
+    from aos8_mcp.show_registry import RF_PRESETS
+
+    for key, preset in RF_PRESETS.items():
+        if not key.startswith("rf_"):
+            continue
+        assert preset.command.startswith("show rf "), (
+            f"{key} expected 'show rf …', got {preset.command!r}"
+        )
+
+
+def test_hyphenated_log_variant_names_resolve_via_normalize_key() -> None:
+    """Users should be able to pass the official hyphenated category name."""
+    for hyphen, expected_key in (
+        ("ap-debug", "ap_debug"),
+        ("arm-user-debug", "arm_user_debug"),
+        ("peer-debug", "peer_debug"),
+        ("user-debug", "user_debug"),
+    ):
+        assert resolve_preset("log", hyphen).key == expected_key
+
+
+def test_every_log_preset_runs_show_log_command_and_is_realtime() -> None:
+    """Sanity-check that every log preset is well-formed."""
+    from aos8_mcp.show_registry import LOG_PRESETS
+
+    for key, preset in LOG_PRESETS.items():
+        assert preset.command.startswith("show log "), (
+            f"{key} does not start with 'show log ': {preset.command!r}"
+        )
+        assert preset.normalizer == "log_text"
+        assert preset.cache_tier == "realtime"
 
 
 def test_every_lc_cluster_preset_uses_lc_cluster_command() -> None:
@@ -160,6 +295,8 @@ def test_datapath_aliases_resolve_to_singular_forms() -> None:
     assert resolve_preset("datapath", "sessions").key == "session"
     assert resolve_preset("datapath", "users").key == "user"
     assert resolve_preset("datapath", "vlans").key == "vlan"
+    assert resolve_preset("datapath", "cpu").key == "utilization"
+    assert resolve_preset("datapath", "cpu_utilization").key == "utilization"
 
 
 def test_every_datapath_preset_runs_show_datapath_command() -> None:

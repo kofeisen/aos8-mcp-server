@@ -1,0 +1,176 @@
+"""Integration-flavored tests for the aos8_log tool.
+
+We don't talk to a real controller — instead we install a fake session in the
+shared store and capture the final CLI string that would be sent. This makes
+it easy to assert that ``tail`` / ``match`` / ``cli_suffix`` are composed in
+the expected order without touching the network.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from aos8_mcp import server
+
+
+@pytest.fixture()
+def fake_session(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Patch ``store.get`` and ``store.show_with_mm_then_md_fallback``.
+
+    Returns a dict that captures the last command issued so each test can
+    assert on it directly.
+    """
+    captured: dict[str, Any] = {"command": None}
+
+    class _FakeSess:
+        md_ips: list[str] = []
+
+        def touch(self) -> None:  # pragma: no cover - unused but mirrors API
+            return None
+
+    async def fake_get(session_id: str) -> _FakeSess:
+        if session_id != "sid-1":
+            raise KeyError(f"Unknown session_id {session_id!r}; create a session first.")
+        return _FakeSess()
+
+    async def fake_show(
+        session_id: str,
+        command: str,
+        *,
+        use_cache: bool,
+        cache_tier: str | None = None,
+    ) -> dict[str, Any]:
+        captured["command"] = command
+        captured["use_cache"] = use_cache
+        captured["cache_tier"] = cache_tier
+        return {
+            "target_host": "mm.example",
+            "command": command,
+            "http_status": 200,
+            "raw": {"_format": "text", "_raw_text": "line1\nline2\nline3\n"},
+            "executed_on": "mm",
+            "md_ip_used": None,
+            "conductor_rejected": False,
+            "from_cache": False,
+        }
+
+    monkeypatch.setattr(server.store, "get", fake_get)
+    monkeypatch.setattr(
+        server.store,
+        "show_with_mm_then_md_fallback",
+        fake_show,
+    )
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_basic_variant_runs_expected_command(fake_session: dict[str, Any]) -> None:
+    out = await server.aos8_log(session_id="sid-1", variant="security")
+    assert out["ok"] is True
+    assert fake_session["command"] == "show log security all"
+    assert out["variant"] == "security"
+    assert out["domain"] == "log"
+
+
+@pytest.mark.asyncio
+async def test_tail_is_appended_to_command(fake_session: dict[str, Any]) -> None:
+    out = await server.aos8_log(
+        session_id="sid-1", variant="errorlog", tail=500
+    )
+    assert out["ok"] is True
+    assert fake_session["command"] == "show log errorlog all 500"
+
+
+@pytest.mark.asyncio
+async def test_match_becomes_include_pipe(fake_session: dict[str, Any]) -> None:
+    out = await server.aos8_log(
+        session_id="sid-1", variant="user", match="auth"
+    )
+    assert out["ok"] is True
+    assert fake_session["command"] == "show log user all | include auth"
+
+
+@pytest.mark.asyncio
+async def test_tail_and_match_combine_with_tail_before_pipe(
+    fake_session: dict[str, Any],
+) -> None:
+    """``tail`` must be appended before the pipe filter."""
+    out = await server.aos8_log(
+        session_id="sid-1",
+        variant="security",
+        tail=500,
+        match="auth",
+    )
+    assert out["ok"] is True
+    assert fake_session["command"] == "show log security all 500 | include auth"
+
+
+@pytest.mark.asyncio
+async def test_match_strips_pipe_chars_to_avoid_injection(
+    fake_session: dict[str, Any],
+) -> None:
+    out = await server.aos8_log(
+        session_id="sid-1", variant="user", match="foo|bar"
+    )
+    assert out["ok"] is True
+    assert fake_session["command"] == "show log user all | include foobar"
+
+
+@pytest.mark.asyncio
+async def test_match_only_pipes_is_rejected(fake_session: dict[str, Any]) -> None:
+    out = await server.aos8_log(session_id="sid-1", variant="user", match="||")
+    assert out["ok"] is False
+    assert "match" in out["error"]
+
+
+@pytest.mark.asyncio
+async def test_tail_zero_or_negative_is_rejected(fake_session: dict[str, Any]) -> None:
+    out_zero = await server.aos8_log(session_id="sid-1", variant="user", tail=0)
+    assert out_zero["ok"] is False
+    out_neg = await server.aos8_log(session_id="sid-1", variant="user", tail=-5)
+    assert out_neg["ok"] is False
+
+
+@pytest.mark.asyncio
+async def test_hyphenated_variant_alias_resolves(fake_session: dict[str, Any]) -> None:
+    """Users can pass the official hyphenated category name."""
+    out = await server.aos8_log(session_id="sid-1", variant="peer-debug", tail=10)
+    assert out["ok"] is True
+    assert fake_session["command"] == "show log peer-debug all 10"
+    assert out["variant"] == "peer_debug"
+
+
+@pytest.mark.asyncio
+async def test_user_cli_suffix_combines_after_match(
+    fake_session: dict[str, Any],
+) -> None:
+    out = await server.aos8_log(
+        session_id="sid-1",
+        variant="all",
+        match="auth",
+        cli_suffix="| exclude debug",
+    )
+    assert out["ok"] is True
+    assert fake_session["command"] == "show log all | include auth | exclude debug"
+
+
+@pytest.mark.asyncio
+async def test_command_override_bypasses_preset(fake_session: dict[str, Any]) -> None:
+    out = await server.aos8_log(
+        session_id="sid-1",
+        command_override="show log security",
+        tail=10,
+    )
+    assert out["ok"] is True
+    assert fake_session["command"] == "show log security 10"
+    assert "variant" not in out
+
+
+@pytest.mark.asyncio
+async def test_unknown_session_returns_clean_error() -> None:
+    """Without the fixture, store.get raises KeyError -> propagated as error."""
+    out = await server.aos8_log(session_id="missing", variant="all")
+    assert out["ok"] is False
+    assert "session" in out["error"].lower() or "unknown" in out["error"].lower()

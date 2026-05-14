@@ -16,7 +16,7 @@ Tool surface (every domain tool follows the same shape: ``variant`` + optional
 * Domain shortcuts (``show`` presets grouped by use case):
     - aos8_controllers, aos8_clients, aos8_aps, aos8_wlan, aos8_log,
       aos8_system, aos8_network, aos8_aaa, aos8_cluster, aos8_rf,
-      aos8_datapath
+      aos8_airmatch, aos8_datapath
 
 * Composite diagnostics (chain several ``show`` calls):
     - aos8_ap_diagnose, aos8_client_diagnose, aos8_health_overview,
@@ -159,6 +159,50 @@ def _compose_datapath_command(
     return cmd
 
 
+_AIRMATCH_AP_NAME_VARIANTS = frozenset(
+    {"solution", "debug_apinfo", "debug_history", "debug_client_history"}
+)
+
+_AAA_OPTIONAL_PROFILE_PRESETS = frozenset(
+    {"authentication_dot1x", "authentication_mac", "authentication_captive_portal"}
+)
+
+
+def _compose_aaa_extra_cli(
+    preset_key: str,
+    *,
+    profile_name: str | None,
+    arg: str | None,
+) -> str | None:
+    """Optional profile suffix plus verbatim ``arg`` for AAA ``show`` presets."""
+    parts: list[str] = []
+    pname = _coerce_optional_str(profile_name)
+    if pname and preset_key in _AAA_OPTIONAL_PROFILE_PRESETS:
+        parts.append(pname.strip())
+    suf = _coerce_optional_str(arg)
+    if suf:
+        parts.append(suf.strip())
+    return " ".join(parts) if parts else None
+
+
+def _compose_airmatch_command(
+    preset_key: str,
+    base: str,
+    *,
+    ap_name: str | None,
+    arg: str | None,
+) -> str:
+    """Append ``ap-name`` / extra tokens for ``show airmatch …`` presets."""
+    cmd = base.strip()
+    apn = _coerce_optional_str(ap_name)
+    suf = _coerce_optional_str(arg)
+    if apn and preset_key in _AIRMATCH_AP_NAME_VARIANTS:
+        cmd = f"{cmd} ap-name {apn.strip()}"
+    if suf:
+        cmd = f"{cmd} {suf.strip()}"
+    return cmd
+
+
 # ---------------------------------------------------------------------------
 # MCP application
 # ---------------------------------------------------------------------------
@@ -170,11 +214,12 @@ mcp = FastMCP(
         "  1) Create a session via aos8_session_create_from_config (preferred) or aos8_session_create.\n"
         "  2) Call domain tools with the returned session_id. Use aos8_catalog to discover\n"
         "     available presets across domains: controllers, clients, aps, wlan, log,\n"
-        "     system, network, aaa, cluster, rf, datapath.\n"
+        "     system, network, aaa, cluster, rf, airmatch, datapath.\n"
         "  3) Use aos8_show for ad-hoc 'show ...' commands; use aos8_*_diagnose for\n"
         "     guided AP/client/system troubleshooting; use aos8_datapath /\n"
         "     aos8_forwarding_overview for forwarding-plane troubleshooting; use\n"
-        "     aos8_cluster for cluster/HA views (auto-targets MD).\n"
+        "     aos8_cluster for cluster/HA views (auto-targets MD); use aos8_airmatch\n"
+        "     for AirMatch optimization/solution/debug on the conductor.\n"
         "  4) Tear down via aos8_session_destroy when finished.\n"
         "Notes:\n"
         "  - The session creation tool itself does not return device data; data tools\n"
@@ -212,6 +257,7 @@ async def _execute_preset(
     *,
     cli_suffix: str | None,
     profile_name: str | None = None,
+    extra_cli: str | None = None,
     use_cache: bool = True,
     max_lines: int | None = None,
     max_rows: int | None = None,
@@ -222,6 +268,9 @@ async def _execute_preset(
         pname = _coerce_optional_str(profile_name) or preset.profile_name_default
         if pname:
             base = f"{base} {pname.strip()}"
+    extra = _coerce_optional_str(extra_cli)
+    if extra:
+        base = f"{base} {extra}"
     cmd = _compose_command(base, cli_suffix)
     err = _validate_show_command(cmd)
     if err:
@@ -249,6 +298,7 @@ async def _run_domain(
     cli_suffix: str | None,
     command_override: str | None,
     profile_name: str | None = None,
+    extra_cli: str | None = None,
     use_cache: bool = True,
     max_lines: int | None = None,
     max_rows: int | None = None,
@@ -261,6 +311,7 @@ async def _run_domain(
     suf = _coerce_optional_str(cli_suffix)
     override = _coerce_optional_str(command_override)
     profile = _coerce_optional_str(profile_name)
+    extra_tokens = _coerce_optional_str(extra_cli)
     v = _coerce_optional_str(variant)
 
     effective_max_lines = max_lines if max_lines is not None else default_max_lines
@@ -298,6 +349,7 @@ async def _run_domain(
         preset,
         cli_suffix=suf,
         profile_name=profile,
+        extra_cli=extra_tokens,
         use_cache=use_cache,
         max_lines=effective_max_lines,
         max_rows=effective_max_rows,
@@ -507,9 +559,28 @@ async def aos8_controllers(
     use_cache: bool = True,
     max_rows: int | None = None,
 ) -> dict[str, Any]:
-    """Controller hierarchy views (default: ``show switches``).
+    """Controller hierarchy views — the MM-side ``show switches`` family.
 
-    Use ``aos8_catalog(domain='controllers')`` to list other variants.
+    Hierarchy roster:
+      * ``switches`` (default)        — every controller registered
+      * ``switches_all``              — explicit ``show switches all``
+      * ``switches_summary``          — short status summary
+      * ``switches_debug``            — extra debug info (MAC, node-path,
+                                        uptime, crash-info, license, release type)
+      * ``switches_regulatory``       — active regulatory file per controller
+
+    Config-update state filters (helpful when chasing config-sync issues):
+      * ``switches_state_down`` / ``state_complete`` / ``state_incomplete``
+        / ``state_inprogress`` / ``state_required``
+
+    Local-controller info (the box the session is logged into):
+      * ``switch_software`` — software / model / build / uptime / reboot cause
+      * ``switch_ip``       — management IP details
+
+    Short aliases are accepted for ergonomics: ``all`` / ``debug`` /
+    ``regulatory`` / ``summary`` / ``state_down`` / ``state_complete`` / etc.
+    For a comprehensive *single-box* identity dump, use
+    ``aos8_system(..., variant='switchinfo')``.
     """
     return await _run_domain(
         session_id=session_id,
@@ -605,27 +676,102 @@ async def aos8_wlan(
 async def aos8_log(
     session_id: str,
     variant: str = "all",
+    tail: int | None = None,
+    match: str | None = None,
     cli_suffix: str | None = None,
     command_override: str | None = None,
     use_cache: bool = False,
     max_lines: int | None = None,
 ) -> dict[str, Any]:
-    """Controller log views (default: ``show log all``).
+    """Controller log views — ``show log [<category>] [all] [<N>]`` with built-in filtering.
 
-    To keep the response manageable, the server returns the last
-    ``AOS8_LOG_DEFAULT_TAIL`` (default 200) lines unless ``max_lines`` overrides it.
-    Combine with ``cli_suffix='| include <keyword>'`` for targeted searches.
+    AOS 8 supports two device-side filters that this tool composes for you:
+      * ``tail=<N>``   — appends ``<N>`` to the CLI so the controller returns
+        only the last N lines. This is much cheaper than fetching the entire
+        log buffer and trimming server-side (which is what ``max_lines`` does).
+      * ``match=<token>`` — shortcut for ``cli_suffix='| include <token>'``;
+        the token has any ``|`` characters stripped to keep the include-regex
+        sane. Both ``tail`` and ``match`` can be combined.
+
+    Example: ``aos8_log(sid, "security", tail=500, match="auth")`` invokes
+    ``show log security all 500 | include auth``.
+
+    Variants (call ``aos8_catalog(domain='log')`` for the full list — mirrors
+    every official ``show log`` subcommand):
+      * ``all`` (default)
+      * ``errorlog`` / ``security`` / ``system`` / ``user`` / ``wireless``
+      * ``ap_debug`` / ``arm`` / ``arm_user_debug`` / ``network`` /
+        ``peer_debug`` / ``user_debug``  (hyphenated names also accepted)
+
+    Output: ``normalized`` contains the parsed log lines (with head/tail
+    summaries); ``max_lines`` applies a final server-side cap (defaulting to
+    ``AOS8_LOG_DEFAULT_TAIL`` = 200) so even an unbounded fetch stays
+    LLM-friendly.
     """
-    return await _run_domain(
-        session_id=session_id,
-        domain="log",
-        variant=variant,
-        cli_suffix=cli_suffix,
-        command_override=command_override,
-        use_cache=use_cache,
-        max_lines=max_lines,
-        default_max_lines=_DEFAULT_LOG_TAIL,
+    sid = _coerce_optional_str(session_id)
+    if not sid:
+        return {"ok": False, "error": "session_id missing or invalid."}
+
+    override = _coerce_optional_str(command_override)
+    suf = _coerce_optional_str(cli_suffix)
+    match_token = _coerce_optional_str(match)
+    v = _coerce_optional_str(variant)
+
+    effective_max_lines = max_lines if max_lines is not None else _DEFAULT_LOG_TAIL
+
+    if tail is not None and tail <= 0:
+        return {"ok": False, "error": "tail must be a positive integer."}
+
+    if override:
+        base_cmd = override
+        cache_tier: CacheTier = "realtime"
+        normalizer: NormalizerHint = "log_text"
+        variant_used: str | None = None
+    else:
+        try:
+            preset = resolve_preset("log", v)
+        except KeyError as e:
+            return {"ok": False, "error": str(e)}
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        base_cmd = preset.command
+        cache_tier = preset.cache_tier
+        normalizer = preset.normalizer
+        variant_used = preset.key
+
+    if tail is not None:
+        base_cmd = f"{base_cmd} {int(tail)}"
+
+    if match_token:
+        token = _escape_for_include(match_token)
+        if not token:
+            return {"ok": False, "error": "match cannot be empty or pipe-only."}
+        include_clause = f"| include {token}"
+        suf = f"{include_clause} {suf}".strip() if suf else include_clause
+
+    cmd = _compose_command(base_cmd, suf)
+    err = _validate_show_command(cmd)
+    if err:
+        return {"ok": False, "error": err}
+
+    try:
+        raw = await store.show_with_mm_then_md_fallback(
+            sid, cmd, use_cache=use_cache, cache_tier=cache_tier
+        )
+    except KeyError as e:
+        return {"ok": False, "error": str(e)}
+    except ArubaHttpError as e:
+        return {"ok": False, "error": str(e)}
+
+    enriched = await _with_normalize(raw, normalizer)
+    enriched = apply_truncation(
+        enriched, max_lines=effective_max_lines, max_rows=None
     )
+    enriched["domain"] = "log"
+    if variant_used:
+        enriched["variant"] = variant_used
+        enriched["cache_tier"] = cache_tier
+    return {"ok": True, **enriched}
 
 
 @mcp.tool()
@@ -635,8 +781,36 @@ async def aos8_system(
     cli_suffix: str | None = None,
     command_override: str | None = None,
     use_cache: bool = True,
+    max_lines: int | None = None,
+    max_rows: int | None = None,
 ) -> dict[str, Any]:
-    """Platform health & identification (version, license, cpuload, memory, storage, ...)."""
+    """Platform health & identification for the local controller (MM by default).
+
+    Identity / version (static, cached longer):
+      * ``version`` (default) — short ``show version`` banner.
+      * ``switchinfo``        — comprehensive ``show switchinfo`` dump (hostname,
+                                system time, OS version, uptime, reboot cause,
+                                management IP, switch role, save/crash status).
+                                **Best one-shot snapshot for "what is this box?"**
+      * ``switch_software``   — ``show switch software`` (compile date, build,
+                                supervisor card details).
+      * ``switch_ip`` / ``hostname`` / ``clock`` / ``uptime`` / ``boot`` /
+        ``image_version`` / ``inventory``
+
+    Capacity & health (realtime / near-realtime):
+      * ``cpuload`` / ``memory`` / ``storage``
+
+    Licensing:
+      * ``license`` / ``license_summary``
+
+    Call ``aos8_catalog(domain='system')`` to list every variant. Note that
+    ``show switches`` and ``show switches state ...`` (hierarchy-wide views)
+    live under ``aos8_controllers``; this tool is the local-box view.
+
+    ``max_lines`` caps text dumps (``switchinfo``/``switch_software`` are
+    multi-line); ``max_rows`` caps table-style outputs (``inventory``,
+    ``license``). Both are optional — system commands are usually short.
+    """
     return await _run_domain(
         session_id=session_id,
         domain="system",
@@ -644,6 +818,8 @@ async def aos8_system(
         cli_suffix=cli_suffix,
         command_override=command_override,
         use_cache=use_cache,
+        max_lines=max_lines,
+        max_rows=max_rows,
     )
 
 
@@ -677,29 +853,96 @@ async def aos8_network(
 async def aos8_aaa(
     session_id: str,
     variant: str = "state_messages",
+    profile_name: str | None = None,
+    arg: str | None = None,
     cli_suffix: str | None = None,
     command_override: str | None = None,
     use_cache: bool = True,
     max_lines: int | None = None,
     max_rows: int | None = None,
 ) -> dict[str, Any]:
-    """AAA views: server status, server-groups, profiles, recent state messages.
+    """AAA authentication servers, profiles, and runtime diagnostics.
 
-    Default ``state_messages`` is useful for chasing recent auth failures
-    (combine with ``cli_suffix='| include <user_or_mac>'``).
+    Aligns with CLI-Bank ``show aaa …`` families (authentication-server,
+    authentication dot1x/mac/captive-portal/stateful-dot1x, state messages).
+
+    **Common variants** (see ``aos8_catalog(domain='aaa')`` for aliases):
+      * ``state_messages`` (default) — recent AAA state (good with
+        ``cli_suffix='| include …'``)
+      * ``authentication_server_all`` / alias ``auth_servers`` — all auth servers
+      * ``authentication_server_radius`` / ``radius`` — RADIUS server list;
+        ``arg='<name>'`` for one server
+      * ``authentication_server_radius_statistics`` — RADIUS counters
+      * ``authentication_server_radius_radsec_status`` — RadSec TLS status
+      * ``authentication_dot1x`` / ``dot1x`` — 802.1X profiles;
+        ``profile_name='<profile>'`` for detail
+      * ``authentication_dot1x_countermeasures`` — dot1x countermeasures
+      * ``authentication_mac`` / ``mac_auth`` — MAC auth profiles;
+        optional ``profile_name``
+      * ``authentication_captive_portal`` / ``cp`` — captive portal profiles;
+        optional ``profile_name``
+      * ``authentication_stateful_dot1x`` — stateful 802.1X summary
+      * ``authentication_stateful_dot1x_config_entries`` — stateful-dot1x config rows
+
+    ``profile_name`` applies only to dot1x/mac/captive-portal list presets.
+    ``arg`` appends trailing CLI tokens (e.g. RADIUS server name). Overrides ignore
+    preset composition — use ``command_override`` for ad-hoc ``show aaa …``.
     """
-    return await _run_domain(
-        session_id=session_id,
-        domain="aaa",
-        variant=variant,
-        cli_suffix=cli_suffix,
-        command_override=command_override,
-        use_cache=use_cache,
-        max_lines=max_lines,
-        max_rows=max_rows,
-        default_max_lines=_DEFAULT_LOG_TAIL,
-        default_max_rows=_DEFAULT_TABLE_CAP,
+    sid = _coerce_optional_str(session_id)
+    if not sid:
+        return {"ok": False, "error": "session_id missing or invalid."}
+
+    suf = _coerce_optional_str(cli_suffix)
+    override = _coerce_optional_str(command_override)
+    v = _coerce_optional_str(variant)
+
+    effective_max_lines = max_lines if max_lines is not None else _DEFAULT_LOG_TAIL
+    effective_max_rows = max_rows if max_rows is not None else _DEFAULT_TABLE_CAP
+
+    if override:
+        cmd = _compose_command(override, suf)
+        err = _validate_show_command(cmd)
+        if err:
+            return {"ok": False, "error": err}
+        try:
+            raw = await store.show_with_mm_then_md_fallback(
+                sid, cmd, use_cache=use_cache, cache_tier="near_realtime"
+            )
+        except KeyError as e:
+            return {"ok": False, "error": str(e)}
+        except ArubaHttpError as e:
+            return {"ok": False, "error": str(e)}
+        enriched = await _with_normalize(raw, "generic")
+        enriched = apply_truncation(
+            enriched, max_lines=effective_max_lines, max_rows=effective_max_rows
+        )
+        return {"ok": True, "domain": "aaa", **enriched}
+
+    try:
+        preset = resolve_preset("aaa", v)
+    except KeyError as e:
+        return {"ok": False, "error": str(e)}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+
+    extra_cli = _compose_aaa_extra_cli(
+        preset.key,
+        profile_name=profile_name,
+        arg=arg,
     )
+
+    result = await _execute_preset(
+        sid,
+        preset,
+        cli_suffix=suf,
+        extra_cli=extra_cli,
+        use_cache=use_cache,
+        max_lines=effective_max_lines,
+        max_rows=effective_max_rows,
+    )
+    if result.get("ok"):
+        result["domain"] = "aaa"
+    return result
 
 
 def _cluster_command_prefers_md(command: str) -> bool:
@@ -847,22 +1090,149 @@ async def aos8_cluster(
 async def aos8_rf(
     session_id: str,
     variant: str = "arm_rf_summary",
+    arg: str | None = None,
     cli_suffix: str | None = None,
     command_override: str | None = None,
     use_cache: bool = True,
     max_rows: int | None = None,
 ) -> dict[str, Any]:
-    """Curated RF monitoring views (ARM RF summary, monitor stats, BSS table, radio summary)."""
+    """RF monitoring plus RF profile configuration (official ``show rf`` family).
+
+    **Operational monitoring** (runtime near-realtime views — mostly ``show ap …``):
+      * ``arm_rf_summary`` (default) — per-radio channel / power / noise
+      * ``monitor_stats`` — air monitor statistics
+      * ``bss_table`` / ``radio_summary`` / ``radio_table``
+      * ``channel_summary`` — ARM scan-times
+
+    **RF configuration** on Mobility Conductor (static ``show rf …``, CLI-Bank
+    ``sh-rf.htm``):
+      * ``rf_am_scan_profile`` — AM scan profile
+      * ``rf_arm_profile`` — ARM profile (also callable as variant ``arm-profile`` / ``arm_profile``)
+      * ``rf_arm_rf_domain_profile`` — ARM RF domain profile
+      * ``rf_dot11_60ghz_radio_profile`` / ``rf_dot11_6ghz_radio_profile``
+      * ``rf_dot11a_radio_profile`` / ``rf_dot11a_secondary_radio_profile`` /
+        ``rf_dot11g_radio_profile``
+      * ``rf_event_thresholds_profile`` / ``rf_ht_radio_profile`` /
+        ``rf_optimization_profile`` / ``rf_spectrum_profile``
+
+    Pass ``arg`` to append a profile name or other trailing CLI tokens, e.g.
+    ``variant='rf_arm_profile', arg='default'`` → ``show rf arm-profile default``.
+    Use ``aos8_catalog(domain='rf')`` for the full preset list and short aliases.
+    """
     return await _run_domain(
         session_id=session_id,
         domain="rf",
         variant=variant,
         cli_suffix=cli_suffix,
         command_override=command_override,
+        extra_cli=arg,
         use_cache=use_cache,
         max_rows=max_rows,
         default_max_rows=_DEFAULT_TABLE_CAP,
     )
+
+
+@mcp.tool()
+async def aos8_airmatch(
+    session_id: str,
+    variant: str = "optimization",
+    ap_name: str | None = None,
+    arg: str | None = None,
+    cli_suffix: str | None = None,
+    command_override: str | None = None,
+    use_cache: bool = True,
+    max_lines: int | None = None,
+    max_rows: int | None = None,
+) -> dict[str, Any]:
+    """AirMatch read-only views — ``show airmatch …`` on Mobility Conductor.
+
+    Covers CLI-Bank AirMatch families: solution list/history, optimization jobs,
+    profile, AP partition, and debug (apinfo, history, db-dump, optimization,
+    client-history).
+
+    Common variants (see ``aos8_catalog(domain='airmatch')``):
+      * ``optimization`` (default) — recent jobs; ``arg='14'`` for solution #14 detail
+      * ``solution_list_all`` — all radios' applied solution rows
+      * ``solution`` — scoped solution; use ``ap_name=…`` or ``arg='band 5 GHz'`` /
+        ``'mac <radiomac>'`` / ``'switch-ip <ip>'``
+      * ``profile`` — AirMatch profile parameters
+      * ``ap_partition_status_detail`` — cluster partition detail (alias ``partition``)
+      * ``debug_apinfo`` / ``debug_history`` / ``debug_client_history`` —
+        pass ``ap_name`` or ``arg='mac …'`` / ``'ethmac …'`` / ``'radiomac …'``
+      * ``debug_db_dump_status`` — DB dump status
+      * ``debug_optimization`` — debug optimization list/detail; ``arg`` examples:
+        ``last``, ``77``, ``advanced partition``, ``77 sort-by band descending``
+
+    Short aliases: ``opt``, ``solution_all``, ``partition``, ``dbg_opt``, …
+
+    ``ap_name`` auto-expands to ``ap-name <name>`` only for ``solution`` and
+    the ``debug_*`` AP-scoped presets above; everything else uses ``arg`` only.
+    """
+    sid = _coerce_optional_str(session_id)
+    if not sid:
+        return {"ok": False, "error": "session_id missing or invalid."}
+
+    suf = _coerce_optional_str(cli_suffix)
+    override = _coerce_optional_str(command_override)
+    v = _coerce_optional_str(variant)
+
+    effective_max_lines = max_lines
+    effective_max_rows = max_rows if max_rows is not None else _DEFAULT_TABLE_CAP
+
+    if override:
+        cmd = _compose_command(override, suf)
+        err = _validate_show_command(cmd)
+        if err:
+            return {"ok": False, "error": err}
+        try:
+            raw = await store.show_with_mm_then_md_fallback(
+                sid, cmd, use_cache=use_cache, cache_tier="near_realtime"
+            )
+        except KeyError as e:
+            return {"ok": False, "error": str(e)}
+        except ArubaHttpError as e:
+            return {"ok": False, "error": str(e)}
+        enriched = await _with_normalize(raw, "generic")
+        enriched = apply_truncation(
+            enriched, max_lines=effective_max_lines, max_rows=effective_max_rows
+        )
+        return {"ok": True, "domain": "airmatch", **enriched}
+
+    try:
+        preset = resolve_preset("airmatch", v)
+    except KeyError as e:
+        return {"ok": False, "error": str(e)}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+
+    base_cmd = _compose_airmatch_command(
+        preset.key,
+        preset.command,
+        ap_name=ap_name,
+        arg=arg,
+    )
+    cmd = _compose_command(base_cmd, suf)
+    err = _validate_show_command(cmd)
+    if err:
+        return {"ok": False, "error": err}
+
+    try:
+        raw = await store.show_with_mm_then_md_fallback(
+            sid, cmd, use_cache=use_cache, cache_tier=preset.cache_tier
+        )
+    except KeyError as e:
+        return {"ok": False, "error": str(e)}
+    except ArubaHttpError as e:
+        return {"ok": False, "error": str(e)}
+
+    enriched = await _with_normalize(raw, preset.normalizer)
+    enriched = apply_truncation(
+        enriched, max_lines=effective_max_lines, max_rows=effective_max_rows
+    )
+    enriched["variant"] = preset.key
+    enriched["cache_tier"] = preset.cache_tier
+    enriched["domain"] = "airmatch"
+    return {"ok": True, **enriched}
 
 
 @mcp.tool()
@@ -885,6 +1255,9 @@ async def aos8_datapath(
     cluster heartbeat anomalies, etc.).
 
     Common variants (call ``aos8_catalog(domain='datapath')`` for the full list):
+      * ``utilization`` / alias ``cpu`` — **datapath CPU utilization by CPU ID**
+        (1 s / 4 s / 64 s averages; CLI-Bank ``show datapath utilization``). Pair with
+        ``debug_performance`` when digging deeper into per-CPU datapath behavior.
       * ``tunnel`` / ``tunnel_counters`` / ``tunnel_id``  — AP GRE & IPsec tunnels
       * ``bridge`` / ``bridge_counters`` / ``bridge_table`` — L2 bridge state
       * ``session`` / ``session_counters`` / ``session_table`` — datapath sessions
@@ -1024,6 +1397,7 @@ async def aos8_ap_diagnose(
     session_id: str,
     ap_name: str,
     include_log_tail: bool = True,
+    include_rf: bool = True,
 ) -> dict[str, Any]:
     """Run several ``show ap *`` queries for a single AP and aggregate the highlights.
 
@@ -1031,9 +1405,16 @@ async def aos8_ap_diagnose(
       * ``show ap database`` (filtered)         — registration / status / flags
       * ``show ap active`` (filtered)           — currently active radios
       * ``show ap radio-summary`` (filtered)    — per-radio channel / power
+      * (optional) ``show ap arm rf-summary`` (filtered) — ARM RF detail per radio
+        (channel / power / noise); aligns with the operational side of RF / ARM
+        troubleshooting referenced alongside the ``show rf`` profile family in
+        CLI-Bank ``sh-rf.htm`` (profile config itself is ``aos8_rf`` with
+        ``rf_*`` variants, not AP-scoped).
       * ``show ap bss-table`` (filtered)        — BSSIDs and load
       * ``show global-user-table list`` (filtered) — associated users
       * (optional) recent ``show log all`` lines mentioning the AP
+
+    Set ``include_rf=False`` to skip the ARM RF-summary step on very slow MM.
     """
     sid = _coerce_optional_str(session_id)
     if not sid:
@@ -1048,9 +1429,17 @@ async def aos8_ap_diagnose(
         ("database", resolve_preset("aps", "database"), inc),
         ("active", resolve_preset("aps", "active"), inc),
         ("radio_summary", resolve_preset("aps", "radio_summary"), inc),
-        ("bss_table", resolve_preset("aps", "bss_table"), inc),
-        ("clients_on_ap", resolve_preset("clients", "global_user_table_list"), inc),
     ]
+    if include_rf:
+        steps.append(
+            ("arm_rf_summary", resolve_preset("rf", "arm_rf_summary"), inc),
+        )
+    steps.extend(
+        [
+            ("bss_table", resolve_preset("aps", "bss_table"), inc),
+            ("clients_on_ap", resolve_preset("clients", "global_user_table_list"), inc),
+        ]
+    )
     if include_log_tail:
         steps.append(("recent_log", resolve_preset("log", "all"), inc))
 

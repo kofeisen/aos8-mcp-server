@@ -17,7 +17,7 @@ A **read-only** MCP server for **Aruba AOS 8.x**: run `show` commands on Mobilit
 | --- | --- |
 | Session | `aos8_session_create_from_config` / `aos8_session_create` → reuse `session_id` → `aos8_session_destroy`; `aos8_session_status` for health and idle time |
 | Execution | MM first; on *not applicable on conductor*, fall back to **configured MD order**; on auth expiry, **one automatic re-login** then retry |
-| Tools | Domains: `aos8_controllers`, `aos8_clients`, `aos8_aps`, `aos8_wlan`, `aos8_log`, `aos8_system`, `aos8_network`, `aos8_aaa`, `aos8_cluster`, `aos8_rf`, `aos8_datapath`; free-form: `aos8_show`; catalog: `aos8_catalog` |
+| Tools | Domains: `aos8_controllers`, `aos8_clients`, `aos8_aps`, `aos8_wlan`, `aos8_log`, `aos8_system`, `aos8_network`, `aos8_aaa`, `aos8_cluster`, `aos8_rf`, `aos8_airmatch`, `aos8_datapath`; free-form: `aos8_show`; catalog: `aos8_catalog` |
 | Diagnostics | `aos8_ap_diagnose`, `aos8_client_diagnose`, `aos8_health_overview`, `aos8_forwarding_overview` (parallel `show` chains) |
 | Response | `raw` is the parsed device payload; `normalized` is a heuristic summary (tabular output often has `count` + `items`) |
 | Truncation | `max_lines` (logs, default last **200** lines), `max_rows` (tables, default **500** rows) |
@@ -91,16 +91,19 @@ Example (field names depend on your UI):
 | Scenario | Call |
 | --- | --- |
 | Platform snapshot | `aos8_health_overview(session_id)` |
-| AP status / offline | `aos8_ap_diagnose(session_id, ap_name="AP-M020")`; or `aos8_aps` with `variant="database"` and `cli_suffix` using the controller `include` filter on the AP name |
+| AP status / offline | `aos8_ap_diagnose(session_id, ap_name="AP-M020")` (includes filtered `show ap arm rf-summary` by default; pass `include_rf=False` to skip); or `aos8_aps` with `variant="database"` and `cli_suffix` |
 | Client trace | `aos8_client_diagnose(session_id, identifier="aa:bb:cc:dd:ee:ff")` |
 | Auth issues | `aos8_aaa` with `variant="state_messages"` and `cli_suffix` using `include` on user or MAC |
 | Cluster | `aos8_cluster(..., variant="lc_cluster_group_membership")`; auto-targets the first configured MD (override with `md_ip="10.1.1.1"`). Useful variants: `heartbeat_counters`, `load_ap`, `history`, `vlan_probe_status`, `dp_cluster_details` + `arg="peer 10.1.1.1"` |
 | Routing | `aos8_network(..., variant="ip_route")` |
 | Resources | `aos8_system(..., variant="cpuload")` or `variant="memory"` |
-| RF | `aos8_rf(..., variant="arm_rf_summary")` |
-| Error log | `aos8_log(..., variant="errorlog", max_lines=100)` |
+| Local identity/state | `aos8_system(..., variant="switchinfo")` returns hostname / system time / OS version / uptime / reboot cause / management IP / role in one call; `variant="switch_software"` for software/build details |
+| Controller hierarchy | `aos8_controllers(..., variant="switches_summary")`, `variant="switches_state_inprogress"` etc.; short aliases `summary` / `debug` / `regulatory` / `state_down` are accepted |
+| RF | Runtime: `aos8_rf(..., variant="arm_rf_summary")`; RF profiles (`show rf`): variants such as `rf_arm_profile`, `rf_spectrum_profile` — see `aos8_catalog(domain='rf')`; append `arg="default"` for a named profile |
+| Logs | `aos8_log(..., variant="errorlog", tail=500, match="auth")` runs `show log errorlog all 500 | include auth`; variants cover every official `show log` category (`security`/`system`/`user`/`wireless`/`ap_debug`/`arm`/`arm_user_debug`/`network`/`peer_debug`/`user_debug`) |
 | Forwarding snapshot | `aos8_forwarding_overview(session_id)`; pass `ap_name` to also filter tunnels for one AP |
 | Forwarding debug | `aos8_datapath(..., variant="tunnel")`, `variant="bridge"` + `ap_name="AP-M020"`, `variant="session_table"` + `arg="10.1.1.1"`, `variant="tunnel_id"` + `arg="12 trusted-vlan"` |
+| AirMatch | `aos8_airmatch(session_id, variant="optimization")`; use `solution_list_all` for network-wide solutions; `ap_name` or `arg` for AP/debug variants — see `aos8_catalog(domain='airmatch')` |
 
 ## Extending and testing
 
