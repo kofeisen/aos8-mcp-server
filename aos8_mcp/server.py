@@ -15,10 +15,12 @@ Tool surface (every domain tool follows the same shape: ``variant`` + optional
 
 * Domain shortcuts (``show`` presets grouped by use case):
     - aos8_controllers, aos8_clients, aos8_aps, aos8_wlan, aos8_log,
-      aos8_system, aos8_network, aos8_aaa, aos8_cluster, aos8_rf
+      aos8_system, aos8_network, aos8_aaa, aos8_cluster, aos8_rf,
+      aos8_datapath
 
 * Composite diagnostics (chain several ``show`` calls):
-    - aos8_ap_diagnose, aos8_client_diagnose, aos8_health_overview
+    - aos8_ap_diagnose, aos8_client_diagnose, aos8_health_overview,
+      aos8_forwarding_overview
 """
 
 from __future__ import annotations
@@ -130,6 +132,33 @@ def _escape_for_include(token: str) -> str:
     return token.replace("|", "").strip()
 
 
+def _compose_datapath_command(
+    base: str,
+    *,
+    ap_name: str | None,
+    ip_addr: str | None,
+    arg: str | None,
+) -> str:
+    """Append the typical ``ap-name <name>`` / ``ip-addr <ip>`` / positional arg.
+
+    The keyword tokens are only added when the base command does not already
+    contain them, so callers can either pick a preset such as ``bridge`` and
+    pass ``ap_name`` (-> ``show datapath bridge ap-name X``) or a preset such
+    as ``bridge_table`` and pass ``arg=<macaddr>`` (-> ``show datapath bridge
+    table aa:bb:..``). ``arg`` is appended verbatim and is intended for
+    positional values that the CLI does not gate behind a keyword.
+    """
+    cmd = base.strip()
+    base_lower = cmd.lower()
+    if ap_name and "ap-name" not in base_lower:
+        cmd = f"{cmd} ap-name {ap_name.strip()}"
+    if ip_addr and "ip-addr" not in base_lower:
+        cmd = f"{cmd} ip-addr {ip_addr.strip()}"
+    if arg:
+        cmd = f"{cmd} {arg.strip()}"
+    return cmd
+
+
 # ---------------------------------------------------------------------------
 # MCP application
 # ---------------------------------------------------------------------------
@@ -141,9 +170,11 @@ mcp = FastMCP(
         "  1) Create a session via aos8_session_create_from_config (preferred) or aos8_session_create.\n"
         "  2) Call domain tools with the returned session_id. Use aos8_catalog to discover\n"
         "     available presets across domains: controllers, clients, aps, wlan, log,\n"
-        "     system, network, aaa, cluster, rf.\n"
+        "     system, network, aaa, cluster, rf, datapath.\n"
         "  3) Use aos8_show for ad-hoc 'show ...' commands; use aos8_*_diagnose for\n"
-        "     guided AP/client/system troubleshooting.\n"
+        "     guided AP/client/system troubleshooting; use aos8_datapath /\n"
+        "     aos8_forwarding_overview for forwarding-plane troubleshooting; use\n"
+        "     aos8_cluster for cluster/HA views (auto-targets MD).\n"
         "  4) Tear down via aos8_session_destroy when finished.\n"
         "Notes:\n"
         "  - The session creation tool itself does not return device data; data tools\n"
@@ -151,6 +182,9 @@ mcp = FastMCP(
         "  - Output always contains 'raw' (original payload) and 'normalized' (heuristic\n"
         "    summary). Use max_lines / max_rows / cli_suffix='| include ...' to control size.\n"
         "  - MM-first execution with automatic fallback to MD on conductor-restricted commands.\n"
+        "  - Cluster-specific note: 'show lc-cluster *' and 'show datapath cluster *'\n"
+        "    only work on MDs; aos8_cluster picks the first configured MD by default\n"
+        "    or honors an explicit md_ip parameter.\n"
         "  - Configure '#no paging' on controllers to avoid pagination artifacts.\n"
     ),
     host=_HOST,
@@ -668,26 +702,145 @@ async def aos8_aaa(
     )
 
 
+def _cluster_command_prefers_md(command: str) -> bool:
+    """Return True for commands documented as MD-only (``Config/enable mode in the managed device``)."""
+    c = command.strip().lower()
+    return c.startswith("show lc-cluster") or c.startswith("show datapath cluster")
+
+
 @mcp.tool()
 async def aos8_cluster(
     session_id: str,
     variant: str = "lc_cluster_group_membership",
+    md_ip: str | None = None,
+    arg: str | None = None,
     cli_suffix: str | None = None,
     command_override: str | None = None,
     use_cache: bool = True,
+    max_lines: int | None = None,
     max_rows: int | None = None,
 ) -> dict[str, Any]:
-    """Cluster / HA / master-redundancy views."""
-    return await _run_domain(
-        session_id=session_id,
-        domain="cluster",
-        variant=variant,
-        cli_suffix=cli_suffix,
-        command_override=command_override,
-        use_cache=use_cache,
-        max_rows=max_rows,
-        default_max_rows=_DEFAULT_TABLE_CAP,
+    """Cluster / HA / master-redundancy views — auto-targets MD for ``lc-cluster`` and ``datapath cluster``.
+
+    Cluster diagnostics live on the managed device: every ``show lc-cluster *``
+    and ``show datapath cluster *`` command is documented as runnable in
+    enable/config mode on the MD only, so calling them on the conductor (MM)
+    just returns ``This command is not applicable on conductor``. This tool
+    therefore dispatches MD-only presets directly to an MD (no wasted MM
+    round-trip), while keeping standard MM-then-MD fallback for cross-domain
+    helpers like ``switches_state`` / ``heartbeat`` / ``master_redundancy``.
+
+    MD selection:
+      * ``md_ip``  — explicit member IP. Logs in on demand using MM credentials
+        if no per-MD credentials exist in the session.
+      * Otherwise the first MD configured in the session is used (typical
+        cluster setups expose identical state on every member, so this is
+        usually fine).
+      * If no MDs are configured at all, the MM-then-MD fallback path is used
+        and a ``note`` field in the result explains why.
+
+    Common variants (call ``aos8_catalog(domain='cluster')`` for the full list):
+      * ``lc_cluster_group_membership`` (default)        — leader/member roster
+      * ``lc_cluster_group_profile`` [arg=<profile>]     — profile detail
+      * ``lc_cluster_heartbeat_counters``                — per-peer heartbeat
+      * ``lc_cluster_load_distribution_ap`` / ``..._client`` — AP/client distribution
+      * ``lc_cluster_history`` / ``lc_cluster_global_events`` — connect/disconnect events
+      * ``lc_cluster_vlan_probe_status``                 — L2 probing health
+      * ``lc_cluster_papi_counters`` / ``lc_cluster_gsm_counters`` — control-plane health
+      * ``lc_cluster_bucket_distribution_essid`` arg=<essid>
+      * ``datapath_cluster`` / ``datapath_cluster_details`` [arg='peer <ip>']
+      * ``datapath_cluster_heartbeat_counters``
+
+    The ``arg`` parameter is appended verbatim to the base command — useful for
+    ``group-profile <name>``, ``details peer <ip>``, ``bucket distribution
+    essid <name>``, etc. Combine with ``cli_suffix='| include ...'`` for
+    further filtering.
+    """
+    sid = _coerce_optional_str(session_id)
+    if not sid:
+        return {"ok": False, "error": "session_id missing or invalid."}
+
+    suf = _coerce_optional_str(cli_suffix)
+    override = _coerce_optional_str(command_override)
+    extra = _coerce_optional_str(arg)
+    explicit_md = _coerce_optional_str(md_ip)
+    v = _coerce_optional_str(variant)
+
+    effective_max_lines = max_lines
+    effective_max_rows = max_rows if max_rows is not None else _DEFAULT_TABLE_CAP
+
+    try:
+        sess = await store.get(sid)
+    except KeyError as e:
+        return {"ok": False, "error": str(e)}
+
+    if override:
+        base_cmd = override
+        cache_tier: CacheTier = "near_realtime"
+        normalizer: NormalizerHint = "generic"
+        variant_used: str | None = None
+    else:
+        try:
+            preset = resolve_preset("cluster", v)
+        except KeyError as e:
+            return {"ok": False, "error": str(e)}
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        base_cmd = preset.command
+        cache_tier = preset.cache_tier
+        normalizer = preset.normalizer
+        variant_used = preset.key
+
+    if extra:
+        base_cmd = f"{base_cmd} {extra}"
+    cmd = _compose_command(base_cmd, suf)
+    err = _validate_show_command(cmd)
+    if err:
+        return {"ok": False, "error": err}
+
+    md_only = _cluster_command_prefers_md(cmd)
+    chosen_md = explicit_md or (sess.md_ips[0] if sess.md_ips else None)
+    target_note: str | None = None
+
+    try:
+        if md_only and chosen_md:
+            raw = await store.show_on_target(
+                sid,
+                cmd,
+                target="md",
+                md_ip=chosen_md,
+                use_cache=use_cache,
+                cache_tier=cache_tier,
+            )
+        else:
+            if md_only and not chosen_md:
+                target_note = (
+                    "MD-only command but no MDs are configured for this session. "
+                    "Falling back to MM (which will report 'not applicable on conductor'). "
+                    "Configure md_ips via aos8.devices.yaml or pass md_ip explicitly."
+                )
+            raw = await store.show_with_mm_then_md_fallback(
+                sid, cmd, use_cache=use_cache, cache_tier=cache_tier
+            )
+    except KeyError as e:
+        return {"ok": False, "error": str(e)}
+    except (ArubaHttpError, ValueError) as e:
+        return {"ok": False, "error": str(e)}
+
+    enriched = await _with_normalize(raw, normalizer)
+    enriched = apply_truncation(
+        enriched, max_lines=effective_max_lines, max_rows=effective_max_rows
     )
+    enriched["domain"] = "cluster"
+    if variant_used:
+        enriched["variant"] = variant_used
+        enriched["cache_tier"] = cache_tier
+    if target_note:
+        existing = enriched.get("note")
+        enriched["note"] = (
+            f"{existing}\n{target_note}" if existing else target_note
+        )
+    return {"ok": True, **enriched}
 
 
 @mcp.tool()
@@ -710,6 +863,118 @@ async def aos8_rf(
         max_rows=max_rows,
         default_max_rows=_DEFAULT_TABLE_CAP,
     )
+
+
+@mcp.tool()
+async def aos8_datapath(
+    session_id: str,
+    variant: str = "tunnel",
+    ap_name: str | None = None,
+    ip_addr: str | None = None,
+    arg: str | None = None,
+    cli_suffix: str | None = None,
+    command_override: str | None = None,
+    use_cache: bool = False,
+    max_lines: int | None = None,
+    max_rows: int | None = None,
+) -> dict[str, Any]:
+    """Forwarding-plane diagnostics — ``show datapath *`` subcommand family.
+
+    Use this when troubleshooting traffic-related issues (clients can associate
+    but cannot pass traffic, intermittent forwarding, tunnel/IPsec problems,
+    cluster heartbeat anomalies, etc.).
+
+    Common variants (call ``aos8_catalog(domain='datapath')`` for the full list):
+      * ``tunnel`` / ``tunnel_counters`` / ``tunnel_id``  — AP GRE & IPsec tunnels
+      * ``bridge`` / ``bridge_counters`` / ``bridge_table`` — L2 bridge state
+      * ``session`` / ``session_counters`` / ``session_table`` — datapath sessions
+      * ``user`` / ``user_table`` / ``user_counters``     — datapath user table
+      * ``vlan`` / ``vlan_table`` / ``vlan_pvst``         — VLAN membership
+      * ``frame`` / ``frame_counters``                    — packet processing counters
+      * ``crypto_counters`` / ``cluster_heartbeat_counters`` — IPsec / HA health
+      * ``mobility_*``                                    — L3 mobility tables
+      * ``route`` / ``route_cache`` / ``acl`` / ``ipsec_map``
+
+    Typed parameters:
+      * ``ap_name``  — appended as ``ap-name <name>`` when the variant supports it.
+      * ``ip_addr``  — appended as ``ip-addr <ip>`` when the variant supports it.
+      * ``arg``      — appended verbatim, used for positional values such as the
+                       MAC after ``bridge table``, the IP after ``session table``,
+                       the tunnel id after ``tunnel_id``, the session id after
+                       ``session_session_id``, or qualifiers like ``trusted-vlan``.
+
+    Pass ``cli_suffix='| include <token>'`` for further filtering, ``max_rows`` /
+    ``max_lines`` to cap large outputs. ``use_cache`` defaults to False because
+    every datapath preset is in the realtime tier.
+    """
+    sid = _coerce_optional_str(session_id)
+    if not sid:
+        return {"ok": False, "error": "session_id missing or invalid."}
+
+    suf = _coerce_optional_str(cli_suffix)
+    override = _coerce_optional_str(command_override)
+    apn = _coerce_optional_str(ap_name)
+    ipa = _coerce_optional_str(ip_addr)
+    extra = _coerce_optional_str(arg)
+    v = _coerce_optional_str(variant)
+
+    effective_max_lines = max_lines
+    effective_max_rows = max_rows if max_rows is not None else _DEFAULT_TABLE_CAP
+
+    if override:
+        composed = _compose_datapath_command(
+            override, ap_name=apn, ip_addr=ipa, arg=extra
+        )
+        cmd = _compose_command(composed, suf)
+        err = _validate_show_command(cmd)
+        if err:
+            return {"ok": False, "error": err}
+        try:
+            raw = await store.show_with_mm_then_md_fallback(
+                sid, cmd, use_cache=use_cache, cache_tier="realtime"
+            )
+        except KeyError as e:
+            return {"ok": False, "error": str(e)}
+        except ArubaHttpError as e:
+            return {"ok": False, "error": str(e)}
+        enriched = await _with_normalize(raw, "generic")
+        enriched = apply_truncation(
+            enriched, max_lines=effective_max_lines, max_rows=effective_max_rows
+        )
+        return {"ok": True, "domain": "datapath", **enriched}
+
+    try:
+        preset = resolve_preset("datapath", v)
+    except KeyError as e:
+        return {"ok": False, "error": str(e)}
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+
+    base_cmd = _compose_datapath_command(
+        preset.command, ap_name=apn, ip_addr=ipa, arg=extra
+    )
+    cmd = _compose_command(base_cmd, suf)
+    err = _validate_show_command(cmd)
+    if err:
+        return {"ok": False, "error": err}
+
+    try:
+        raw = await store.show_with_mm_then_md_fallback(
+            sid, cmd, use_cache=use_cache, cache_tier=preset.cache_tier
+        )
+    except KeyError as e:
+        return {"ok": False, "error": str(e)}
+    except ArubaHttpError as e:
+        return {"ok": False, "error": str(e)}
+
+    enriched = await _with_normalize(raw, preset.normalizer)
+    enriched = apply_truncation(
+        enriched, max_lines=effective_max_lines, max_rows=effective_max_rows
+    )
+    enriched["variant"] = preset.key
+    enriched["cache_tier"] = preset.cache_tier
+    enriched["domain"] = "datapath"
+    return {"ok": True, **enriched}
 
 
 # ===========================================================================
@@ -851,6 +1116,66 @@ async def aos8_client_diagnose(
         "identifier": ident,
         "steps": results,
     }
+
+
+@mcp.tool()
+async def aos8_forwarding_overview(
+    session_id: str,
+    ap_name: str | None = None,
+) -> dict[str, Any]:
+    """One-shot forwarding-plane health snapshot via parallel ``show datapath`` calls.
+
+    Steps executed in parallel:
+      * ``show datapath cluster``                  — controller HA forwarding view
+      * ``show datapath cluster heartbeat counters`` — HA heartbeat health
+      * ``show datapath tunnel counters``          — GRE / IPsec tunnel state
+      * ``show datapath frame counters``           — packet processing counters
+      * ``show datapath session counters``         — session table capacity
+      * ``show datapath bridge counters``          — L2 bridge table capacity
+      * ``show datapath user counters``            — datapath user table capacity
+      * ``show datapath crypto counters``          — IPsec / dot1x term health
+      * (optional, when ``ap_name`` is set) ``show datapath tunnel | include <ap>``
+
+    Use this as the morning check / opening triage step for any forwarding
+    incident before drilling into a specific subsystem with ``aos8_datapath``.
+    """
+    sid = _coerce_optional_str(session_id)
+    if not sid:
+        return {"ok": False, "error": "session_id missing or invalid."}
+
+    steps: list[tuple[str, ShowPreset, str | None]] = [
+        ("cluster", resolve_preset("datapath", "cluster"), None),
+        ("cluster_heartbeat_counters", resolve_preset("datapath", "cluster_heartbeat_counters"), None),
+        ("tunnel_counters", resolve_preset("datapath", "tunnel_counters"), None),
+        ("frame_counters", resolve_preset("datapath", "frame_counters"), None),
+        ("session_counters", resolve_preset("datapath", "session_counters"), None),
+        ("bridge_counters", resolve_preset("datapath", "bridge_counters"), None),
+        ("user_counters", resolve_preset("datapath", "user_counters"), None),
+        ("crypto_counters", resolve_preset("datapath", "crypto_counters"), None),
+    ]
+
+    apn = _coerce_optional_str(ap_name)
+    if apn:
+        token = _escape_for_include(apn)
+        steps.append(("tunnels_for_ap", resolve_preset("datapath", "tunnel"), f"| include {token}"))
+
+    results = await _gather_steps(sid, steps)
+    summary: dict[str, Any] = {}
+    for s in results:
+        label = s["step"]
+        if not s.get("ok"):
+            summary[label] = {"error": s.get("error", "failed")}
+            continue
+        norm = s.get("normalized") or {}
+        if norm.get("kind") == "log":
+            summary[label] = {"log_lines": norm.get("line_count_total") or norm.get("line_count")}
+        elif "count" in norm:
+            summary[label] = {
+                "count": norm.get("count_total") or norm.get("count"),
+            }
+        else:
+            summary[label] = {"kind": norm.get("kind") or "unknown"}
+    return {"ok": True, "ap_name": apn, "summary": summary, "steps": results}
 
 
 @mcp.tool()

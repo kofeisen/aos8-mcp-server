@@ -17,8 +17,8 @@
 | --- | --- |
 | 会话 | `aos8_session_create_from_config` / `aos8_session_create` → 复用 `session_id` → `aos8_session_destroy`；`aos8_session_status` 查看状态与空闲时间 |
 | 执行 | MM 优先；若提示 *not applicable on conductor*，按配置 **MD 顺序** 回落；Token 失效时 **自动重登一次** |
-| 工具 | 领域：`aos8_controllers`、`aos8_clients`、`aos8_aps`、`aos8_wlan`、`aos8_log`、`aos8_system`、`aos8_network`、`aos8_aaa`、`aos8_cluster`、`aos8_rf`；自由：`aos8_show`；目录：`aos8_catalog` |
-| 诊断 | `aos8_ap_diagnose`、`aos8_client_diagnose`、`aos8_health_overview`（内部并行多条 `show`） |
+| 工具 | 领域：`aos8_controllers`、`aos8_clients`、`aos8_aps`、`aos8_wlan`、`aos8_log`、`aos8_system`、`aos8_network`、`aos8_aaa`、`aos8_cluster`、`aos8_rf`、`aos8_datapath`；自由：`aos8_show`；目录：`aos8_catalog` |
+| 诊断 | `aos8_ap_diagnose`、`aos8_client_diagnose`、`aos8_health_overview`、`aos8_forwarding_overview`（内部并行多条 `show`） |
 | 响应 | `raw` 为设备原始解析结果；`normalized` 为启发式摘要（表格类常见 `count` + `items`） |
 | 裁剪 | `max_lines`（日志，默认保留尾部 200 行）、`max_rows`（表格，默认 500 行） |
 | 缓存 | `static` / `near_realtime` / `realtime` 三档 TTL，见下方环境变量 |
@@ -94,11 +94,13 @@ aos8-mcp-server
 | AP 状态 / 离线 | `aos8_ap_diagnose(session_id, ap_name="AP-M020")`；或 `aos8_aps` + `variant="database"` + `cli_suffix` 使用控制器上的 `include` 过滤 AP 名 |
 | 终端 | `aos8_client_diagnose(session_id, identifier="aa:bb:cc:dd:ee:ff")` |
 | 认证 | `aos8_aaa` + `variant="state_messages"` + `cli_suffix` 用 `include` 过滤用户或 MAC |
-| 集群 | `aos8_cluster(..., variant="lc_cluster_group_membership")` |
+| 集群 | `aos8_cluster(..., variant="lc_cluster_group_membership")`；自动落到 MD（如需指定成员加 `md_ip="10.1.1.1"`）。常用变体：`heartbeat_counters`、`load_ap`、`history`、`vlan_probe_status`、`dp_cluster_details` + `arg="peer 10.1.1.1"` |
 | 路由 | `aos8_network(..., variant="ip_route")` |
 | 资源 | `aos8_system(..., variant="cpuload")` 或 `variant="memory"` |
 | RF | `aos8_rf(..., variant="arm_rf_summary")` |
 | 错误日志 | `aos8_log(..., variant="errorlog", max_lines=100)` |
+| 转发面快照 | `aos8_forwarding_overview(session_id)`；可选 `ap_name` 过滤该 AP 的隧道 |
+| 转发排错 | `aos8_datapath(..., variant="tunnel")`、`variant="bridge"` + `ap_name="AP-M020"`、`variant="session_table"` + `arg="10.1.1.1"`、`variant="tunnel_id"` + `arg="12 trusted-vlan"` |
 
 ## 扩展与测试
 

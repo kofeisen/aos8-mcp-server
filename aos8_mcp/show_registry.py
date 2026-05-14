@@ -837,31 +837,165 @@ AAA_PRESETS: dict[str, ShowPreset] = {
 
 # ---------------------------------------------------------------------------
 # Domain: cluster / HA
+#
+# Almost every ``show lc-cluster *`` and ``show datapath cluster *`` command
+# is documented as "Config mode or enable mode in the managed device", which
+# means MM/Conductor returns "not applicable on conductor". The aos8_cluster
+# tool dispatches lc-cluster / datapath cluster presets directly to an MD to
+# avoid a wasted MM round trip; ``switches_state`` / ``heartbeat`` /
+# ``master_redundancy`` remain MM-runnable and use the standard MM-then-MD
+# fallback.
 # ---------------------------------------------------------------------------
 CLUSTER_PRESETS: dict[str, ShowPreset] = {
+    # --- group / membership / profile ---------------------------------
     "lc_cluster_group_membership": ShowPreset(
         key="lc_cluster_group_membership",
         command="show lc-cluster group-membership",
-        description="LC cluster group membership and state.",
+        description=(
+            "Active cluster members and state (Leader/Member/Incompatible) "
+            "with peer IPs and connection-type."
+        ),
         normalizer="lc_cluster",
         cache_tier="near_realtime",
     ),
     "lc_cluster_group_profile": ShowPreset(
         key="lc_cluster_group_profile",
         command="show lc-cluster group-profile",
-        description="LC cluster group profile configuration.",
+        description=(
+            "LC cluster group profile (members, priority, MCAST/VRRP VLAN, "
+            "RAP public IP). Pass arg=<profile-name> for a single profile."
+        ),
+        cache_tier="static",
+    ),
+
+    # --- vlan probe / exclude -----------------------------------------
+    "lc_cluster_exclude_vlan": ShowPreset(
+        key="lc_cluster_exclude_vlan",
+        command="show lc-cluster exclude-vlan",
+        description="VLANs excluded from L2 probing.",
         cache_tier="static",
     ),
     "lc_cluster_vlan_probe_status": ShowPreset(
         key="lc_cluster_vlan_probe_status",
         command="show lc-cluster vlan-probe status",
-        description="VLAN probe status across the cluster.",
+        description="VLAN probe status across the cluster (REQ/ACK/FAIL counters per peer).",
         cache_tier="near_realtime",
     ),
+
+    # --- heartbeat / control-plane counters ---------------------------
+    "lc_cluster_heartbeat_counters": ShowPreset(
+        key="lc_cluster_heartbeat_counters",
+        command="show lc-cluster heartbeat counters",
+        description=(
+            "Per-peer heartbeat counters (RES/RSR/MIS/HMPD/LMRPD/IDPD/CPDPD/"
+            "CDPD/LMHINT/LTOD) — primary signal for peer disconnect events."
+        ),
+        cache_tier="realtime",
+    ),
+    "lc_cluster_papi_counters": ShowPreset(
+        key="lc_cluster_papi_counters",
+        command="show lc-cluster papi counters",
+        description="Cluster control-plane PAPI messaging counters.",
+        cache_tier="realtime",
+    ),
+    "lc_cluster_gsm_counters": ShowPreset(
+        key="lc_cluster_gsm_counters",
+        command="show lc-cluster gsm counters",
+        description="Cluster GSM (Global State Machine) counters across STA/AP/BSS channels.",
+        cache_tier="realtime",
+    ),
+
+    # --- history / events ---------------------------------------------
+    "lc_cluster_history": ShowPreset(
+        key="lc_cluster_history",
+        command="show lc-cluster history",
+        description="Cluster connect/disconnect history with reason and timestamp.",
+        cache_tier="realtime",
+    ),
+    "lc_cluster_global_events": ShowPreset(
+        key="lc_cluster_global_events",
+        command="show lc-cluster global-events",
+        description="Cluster global events.",
+        cache_tier="realtime",
+    ),
+
+    # --- load distribution -------------------------------------------
+    "lc_cluster_load_distribution_ap": ShowPreset(
+        key="lc_cluster_load_distribution_ap",
+        command="show lc-cluster load distribution ap",
+        description="AP load distribution across cluster members (Active/Standby APs per node).",
+        cache_tier="near_realtime",
+    ),
+    "lc_cluster_load_distribution_client": ShowPreset(
+        key="lc_cluster_load_distribution_client",
+        command="show lc-cluster load distribution client",
+        description="Client load distribution across cluster members.",
+        cache_tier="near_realtime",
+    ),
+
+    # --- bucket map / distribution (8.11+) ----------------------------
+    "lc_cluster_bucket_distribution_all": ShowPreset(
+        key="lc_cluster_bucket_distribution_all",
+        command="show lc-cluster bucket distribution all",
+        description="Current bucket distribution for all ESSIDs (AOS 8.11+).",
+        cache_tier="near_realtime",
+    ),
+    "lc_cluster_bucket_distribution_essid": ShowPreset(
+        key="lc_cluster_bucket_distribution_essid",
+        command="show lc-cluster bucket distribution essid",
+        description="Current bucket distribution for a specific ESSID — pass arg=<essid>.",
+        cache_tier="near_realtime",
+    ),
+    "lc_cluster_bucketmap_publish_counters": ShowPreset(
+        key="lc_cluster_bucketmap_publish_counters",
+        command="show lc-cluster bucketmap publish counters",
+        description="Bucketmap publish counters (AOS 8.11+).",
+        cache_tier="realtime",
+    ),
+
+    # --- upgrade ------------------------------------------------------
+    "lc_cluster_upgrade": ShowPreset(
+        key="lc_cluster_upgrade",
+        command="show lc-cluster upgrade",
+        description="Cluster upgrade overview (per-controller and per-AP status).",
+        cache_tier="near_realtime",
+    ),
+    "lc_cluster_scheduled_upgrades": ShowPreset(
+        key="lc_cluster_scheduled_upgrades",
+        command="show lc-cluster scheduled-upgrades",
+        description="Status of clusters scheduled for upgrade.",
+        cache_tier="near_realtime",
+    ),
+
+    # --- datapath cluster (forwarding-plane HA view) ------------------
+    "datapath_cluster": ShowPreset(
+        key="datapath_cluster",
+        command="show datapath cluster",
+        description="Datapath cluster statistics (forwarding-plane HA view).",
+        cache_tier="realtime",
+    ),
+    "datapath_cluster_details": ShowPreset(
+        key="datapath_cluster_details",
+        command="show datapath cluster details",
+        description=(
+            "Datapath cluster heartbeat data: thresholds, datapath assignments, "
+            "per-peer HBT counters (Sent/Rcvd/Inflight/Drops). "
+            "Pass arg='peer <ip>' to scope to one peer."
+        ),
+        cache_tier="realtime",
+    ),
+    "datapath_cluster_heartbeat_counters": ShowPreset(
+        key="datapath_cluster_heartbeat_counters",
+        command="show datapath cluster heartbeat counters",
+        description="Datapath cluster heartbeat counters.",
+        cache_tier="realtime",
+    ),
+
+    # --- generic / cross-domain helpers (run on MM) -------------------
     "switches_state": ShowPreset(
         key="switches_state",
         command="show switches state",
-        description="State of every controller in the hierarchy.",
+        description="State of every controller in the hierarchy (MM-side view).",
         normalizer="switches",
         cache_tier="near_realtime",
     ),
@@ -877,6 +1011,29 @@ CLUSTER_PRESETS: dict[str, ShowPreset] = {
         description="Conductor/master redundancy state.",
         cache_tier="near_realtime",
     ),
+}
+
+# Convenience aliases so callers can use familiar shorter names.
+_CLUSTER_ALIASES: dict[str, str] = {
+    "group_membership": "lc_cluster_group_membership",
+    "group_profile": "lc_cluster_group_profile",
+    "heartbeat_counters": "lc_cluster_heartbeat_counters",
+    "history": "lc_cluster_history",
+    "global_events": "lc_cluster_global_events",
+    "vlan_probe_status": "lc_cluster_vlan_probe_status",
+    "load_ap": "lc_cluster_load_distribution_ap",
+    "load_client": "lc_cluster_load_distribution_client",
+    "papi_counters": "lc_cluster_papi_counters",
+    "gsm_counters": "lc_cluster_gsm_counters",
+    "upgrade": "lc_cluster_upgrade",
+    "scheduled_upgrades": "lc_cluster_scheduled_upgrades",
+    "exclude_vlan": "lc_cluster_exclude_vlan",
+    "bucket_all": "lc_cluster_bucket_distribution_all",
+    "bucket_essid": "lc_cluster_bucket_distribution_essid",
+    "bucketmap_publish_counters": "lc_cluster_bucketmap_publish_counters",
+    "dp_cluster": "datapath_cluster",
+    "dp_cluster_details": "datapath_cluster_details",
+    "dp_cluster_heartbeat_counters": "datapath_cluster_heartbeat_counters",
 }
 
 # ---------------------------------------------------------------------------
@@ -923,6 +1080,525 @@ RF_PRESETS: dict[str, ShowPreset] = {
         description="ARM scan times per radio (helpful for off-channel scan tuning).",
         cache_tier="near_realtime",
     ),
+}
+
+
+# ---------------------------------------------------------------------------
+# Domain: datapath  (forwarding-plane diagnostics — ``show datapath *``)
+#
+# Almost every datapath subcommand is realtime: counters / tables that change
+# on every packet. We therefore default the cache tier to ``realtime`` (TTL=0)
+# so callers always see fresh state during a troubleshooting session.
+# ---------------------------------------------------------------------------
+DATAPATH_PRESETS: dict[str, ShowPreset] = {
+    # --- bridge family --------------------------------------------------
+    "bridge": ShowPreset(
+        key="bridge",
+        command="show datapath bridge",
+        description="Bridge table snapshot. Use ap_name / ip_addr to scope to one AP.",
+        cache_tier="realtime",
+    ),
+    "bridge_counters": ShowPreset(
+        key="bridge_counters",
+        command="show datapath bridge counters",
+        description="Bridge table counters (entries, water mark, allocation failures, max link length).",
+        cache_tier="realtime",
+    ),
+    "bridge_devices": ShowPreset(
+        key="bridge_devices",
+        command="show datapath bridge devices",
+        description="Datapath bridge devices.",
+        cache_tier="realtime",
+    ),
+    "bridge_table": ShowPreset(
+        key="bridge_table",
+        command="show datapath bridge table",
+        description="Bridge table — pass arg=<macaddr> to look up a single MAC.",
+        cache_tier="realtime",
+    ),
+    "bridge_verbose": ShowPreset(
+        key="bridge_verbose",
+        command="show datapath bridge verbose",
+        description="Bridge details in tabular format.",
+        cache_tier="realtime",
+    ),
+
+    # --- cluster family -------------------------------------------------
+    "cluster": ShowPreset(
+        key="cluster",
+        command="show datapath cluster",
+        description="Datapath cluster statistics (controller HA forwarding view).",
+        cache_tier="realtime",
+    ),
+    "cluster_details": ShowPreset(
+        key="cluster_details",
+        command="show datapath cluster details",
+        description="Detailed heartbeat counters with missed/delayed sequence numbers.",
+        cache_tier="realtime",
+    ),
+    "cluster_heartbeat_counters": ShowPreset(
+        key="cluster_heartbeat_counters",
+        command="show datapath cluster heartbeat counters",
+        description="Cluster heartbeat counters.",
+        cache_tier="realtime",
+    ),
+
+    # --- session family -------------------------------------------------
+    "session": ShowPreset(
+        key="session",
+        command="show datapath session",
+        description=(
+            "Datapath session table snapshot. Use ap_name / ip_addr to scope. "
+            "Output can be very large; consider max_rows or cli_suffix='| include ...'."
+        ),
+        cache_tier="realtime",
+    ),
+    "session_table": ShowPreset(
+        key="session_table",
+        command="show datapath session table",
+        description="Datapath session table; pass arg=<A.B.C.D> to filter by IP.",
+        cache_tier="realtime",
+    ),
+    "session_counters": ShowPreset(
+        key="session_counters",
+        command="show datapath session counters",
+        description="Session counters: current/high/max entries, aged, pending deletes.",
+        cache_tier="realtime",
+    ),
+    "session_dpi": ShowPreset(
+        key="session_dpi",
+        command="show datapath session dpi",
+        description="DPI session view (top level).",
+        cache_tier="realtime",
+    ),
+    "session_dpi_counters": ShowPreset(
+        key="session_dpi_counters",
+        command="show datapath session dpi counters",
+        description="DPI session counters; pass arg='top' or 'all' for variants.",
+        cache_tier="realtime",
+    ),
+    "session_dpi_table": ShowPreset(
+        key="session_dpi_table",
+        command="show datapath session dpi table",
+        description="DPI session table; pass arg=<A.B.C.D> or 'appid <id>'.",
+        cache_tier="realtime",
+    ),
+    "session_high_value": ShowPreset(
+        key="session_high_value",
+        command="show datapath session high-value",
+        description="High-value sessions; pass arg='user <macaddr>' to filter by user.",
+        cache_tier="realtime",
+    ),
+    "session_session_id": ShowPreset(
+        key="session_session_id",
+        command="show datapath session session-id",
+        description="Look up a session by id; pass arg=<sid> (optionally append 'dpi').",
+        cache_tier="realtime",
+    ),
+    "session_uplink": ShowPreset(
+        key="session_uplink",
+        command="show datapath session uplink",
+        description="Sessions associated with the uplink VLAN.",
+        cache_tier="realtime",
+    ),
+    "session_perf": ShowPreset(
+        key="session_perf",
+        command="show datapath session perf",
+        description="Session performance metrics.",
+        cache_tier="realtime",
+    ),
+    "session_ipv6": ShowPreset(
+        key="session_ipv6",
+        command="show datapath session ipv6",
+        description="IPv6 datapath sessions.",
+        cache_tier="realtime",
+    ),
+
+    # --- tunnel family --------------------------------------------------
+    "tunnel": ShowPreset(
+        key="tunnel",
+        command="show datapath tunnel",
+        description=(
+            "Datapath tunnel table (GRE for APs, IPsec, etc.). "
+            "Includes Source/Destination, Type, MTU, VLAN, Decap/Encap and Heartbeats."
+        ),
+        cache_tier="realtime",
+    ),
+    "tunnel_table": ShowPreset(
+        key="tunnel_table",
+        command="show datapath tunnel table",
+        description="Datapath tunnel table summary.",
+        cache_tier="realtime",
+    ),
+    "tunnel_counters": ShowPreset(
+        key="tunnel_counters",
+        command="show datapath tunnel counters",
+        description="Tunnel counters / FIB stats / entry water marks.",
+        cache_tier="realtime",
+    ),
+    "tunnel_encaps": ShowPreset(
+        key="tunnel_encaps",
+        command="show datapath tunnel encaps",
+        description="Per-tunnel encapsulation statistics.",
+        cache_tier="realtime",
+    ),
+    "tunnel_heartbeat": ShowPreset(
+        key="tunnel_heartbeat",
+        command="show datapath tunnel heartbeat",
+        description="Tunnel heartbeat statistics.",
+        cache_tier="realtime",
+    ),
+    "tunnel_ipv4": ShowPreset(
+        key="tunnel_ipv4",
+        command="show datapath tunnel ipv4",
+        description="IPv4 tunnel table entries.",
+        cache_tier="realtime",
+    ),
+    "tunnel_ipv6": ShowPreset(
+        key="tunnel_ipv6",
+        command="show datapath tunnel ipv6",
+        description="IPv6 tunnel table entries (incl. L2 GRE for IPv6).",
+        cache_tier="realtime",
+    ),
+    "tunnel_station_list": ShowPreset(
+        key="tunnel_station_list",
+        command="show datapath tunnel station-list",
+        description="Tunnel-bound station list.",
+        cache_tier="realtime",
+    ),
+    "tunnel_id": ShowPreset(
+        key="tunnel_id",
+        command="show datapath tunnel tunnel-id",
+        description=(
+            "Detail for a specific tunnel; pass arg=<tid> "
+            "(optionally append 'trusted-vlan' or 'untrusted-vlan')."
+        ),
+        cache_tier="realtime",
+    ),
+    "tunnel_verbose": ShowPreset(
+        key="tunnel_verbose",
+        command="show datapath tunnel verbose",
+        description="Tunnel table verbose view.",
+        cache_tier="realtime",
+    ),
+
+    # --- user family ----------------------------------------------------
+    "user": ShowPreset(
+        key="user",
+        command="show datapath user",
+        description="Datapath user table top-level (use ap_name / ip_addr to scope).",
+        cache_tier="realtime",
+    ),
+    "user_table": ShowPreset(
+        key="user_table",
+        command="show datapath user table",
+        description="Datapath user table.",
+        cache_tier="realtime",
+    ),
+    "user_all": ShowPreset(
+        key="user_all",
+        command="show datapath user all",
+        description="Datapath user table for all CPUs.",
+        cache_tier="realtime",
+    ),
+    "user_counters": ShowPreset(
+        key="user_counters",
+        command="show datapath user counters",
+        description="Datapath user counters (current/high/max, allocation failures).",
+        cache_tier="realtime",
+    ),
+    "user_ipv4": ShowPreset(
+        key="user_ipv4",
+        command="show datapath user ipv4",
+        description="Datapath IPv4 user view.",
+        cache_tier="realtime",
+    ),
+    "user_ipv6": ShowPreset(
+        key="user_ipv6",
+        command="show datapath user ipv6",
+        description="Datapath IPv6 user view.",
+        cache_tier="realtime",
+    ),
+    "user_verbose": ShowPreset(
+        key="user_verbose",
+        command="show datapath user verbose",
+        description="Datapath user verbose view.",
+        cache_tier="realtime",
+    ),
+
+    # --- vlan family ----------------------------------------------------
+    "vlan": ShowPreset(
+        key="vlan",
+        command="show datapath vlan",
+        description="VLAN membership inside the datapath (incl. L2 tunnels).",
+        cache_tier="realtime",
+    ),
+    "vlan_table": ShowPreset(
+        key="vlan_table",
+        command="show datapath vlan table",
+        description="Datapath VLAN table (VLAN / Flags / RACL / Ports).",
+        cache_tier="realtime",
+    ),
+    "vlan_pvst": ShowPreset(
+        key="vlan_pvst",
+        command="show datapath vlan pvst",
+        description="Datapath PVST per-VLAN STP state.",
+        cache_tier="realtime",
+    ),
+
+    # --- frame family ---------------------------------------------------
+    "frame": ShowPreset(
+        key="frame",
+        command="show datapath frame",
+        description=(
+            "High-level packet processing counters (allocated frames, flood frames, "
+            "IP fragmentation/reassembly, BPDUs)."
+        ),
+        cache_tier="realtime",
+    ),
+    "frame_counters": ShowPreset(
+        key="frame_counters",
+        command="show datapath frame counters",
+        description=(
+            "Detailed per-frame counters: Rx/Tx frames+bytes, denied frames, "
+            "Dot1d/Dot1Q discards, etc."
+        ),
+        cache_tier="realtime",
+    ),
+
+    # --- crypto family --------------------------------------------------
+    "crypto": ShowPreset(
+        key="crypto",
+        command="show datapath crypto",
+        description="Datapath crypto top-level snapshot.",
+        cache_tier="realtime",
+    ),
+    "crypto_counters": ShowPreset(
+        key="crypto_counters",
+        command="show datapath crypto counters",
+        description="Crypto counters (IPsec, dot1x term, RSA, AESCCM).",
+        cache_tier="realtime",
+    ),
+
+    # --- route / route-cache -------------------------------------------
+    "route": ShowPreset(
+        key="route",
+        command="show datapath route",
+        description="Datapath route table snapshot.",
+        cache_tier="realtime",
+    ),
+    "route_table": ShowPreset(
+        key="route_table",
+        command="show datapath route table",
+        description="Datapath route table.",
+        cache_tier="realtime",
+    ),
+    "route_counters": ShowPreset(
+        key="route_counters",
+        command="show datapath route counters",
+        description="Datapath route counters.",
+        cache_tier="realtime",
+    ),
+    "route_cache": ShowPreset(
+        key="route_cache",
+        command="show datapath route-cache",
+        description="Datapath route-cache snapshot.",
+        cache_tier="realtime",
+    ),
+    "route_cache_table": ShowPreset(
+        key="route_cache_table",
+        command="show datapath route-cache table",
+        description="Datapath route-cache table.",
+        cache_tier="realtime",
+    ),
+    "route_cache_counters": ShowPreset(
+        key="route_cache_counters",
+        command="show datapath route-cache counters",
+        description="Datapath route-cache counters.",
+        cache_tier="realtime",
+    ),
+
+    # --- nat ------------------------------------------------------------
+    "nat": ShowPreset(
+        key="nat",
+        command="show datapath nat",
+        description="Datapath NAT table snapshot.",
+        cache_tier="realtime",
+    ),
+    "nat_table": ShowPreset(
+        key="nat_table",
+        command="show datapath nat table",
+        description="Datapath NAT table.",
+        cache_tier="realtime",
+    ),
+
+    # --- mobility (datapath mobility tables for L3 roaming) ------------
+    "mobility_discovery_table": ShowPreset(
+        key="mobility_discovery_table",
+        command="show datapath mobility discovery-table",
+        description="Per-client home-agent discovery counts.",
+        cache_tier="realtime",
+    ),
+    "mobility_home_agent_table": ShowPreset(
+        key="mobility_home_agent_table",
+        command="show datapath mobility home-agent-table",
+        description="Home-agent table for L3 mobility.",
+        cache_tier="realtime",
+    ),
+    "mobility_mcast_table": ShowPreset(
+        key="mobility_mcast_table",
+        command="show datapath mobility mcast-table",
+        description="Multicast group table that floods RA traffic to roamed clients.",
+        cache_tier="realtime",
+    ),
+    "mobility_stats": ShowPreset(
+        key="mobility_stats",
+        command="show datapath mobility stats",
+        description="Datapath mobility statistics (HA discovery, HAT insert/delete).",
+        cache_tier="realtime",
+    ),
+
+    # --- station --------------------------------------------------------
+    "station": ShowPreset(
+        key="station",
+        command="show datapath station",
+        description="Datapath station table top-level.",
+        cache_tier="realtime",
+    ),
+    "station_table": ShowPreset(
+        key="station_table",
+        command="show datapath station table",
+        description="Datapath station table.",
+        cache_tier="realtime",
+    ),
+    "station_counters": ShowPreset(
+        key="station_counters",
+        command="show datapath station counters",
+        description="Datapath station counters.",
+        cache_tier="realtime",
+    ),
+
+    # --- hardware -------------------------------------------------------
+    "hardware_counters": ShowPreset(
+        key="hardware_counters",
+        command="show datapath hardware counters",
+        description="Hardware counters from the datapath ASIC/CPU.",
+        cache_tier="realtime",
+    ),
+    "hardware_statistics": ShowPreset(
+        key="hardware_statistics",
+        command="show datapath hardware statistics",
+        description="Hardware statistics block.",
+        cache_tier="realtime",
+    ),
+
+    # --- debug ----------------------------------------------------------
+    "debug_performance": ShowPreset(
+        key="debug_performance",
+        command="show datapath debug performance",
+        description="Datapath debug performance snapshot per CPU.",
+        cache_tier="realtime",
+    ),
+    "debug_performance_counters": ShowPreset(
+        key="debug_performance_counters",
+        command="show datapath debug performance counters",
+        description="Datapath debug performance counters.",
+        cache_tier="realtime",
+    ),
+    "debug_dma_counters": ShowPreset(
+        key="debug_dma_counters",
+        command="show datapath debug dma counters",
+        description="Datapath DMA debug counters.",
+        cache_tier="realtime",
+    ),
+    "debug_eap_counters": ShowPreset(
+        key="debug_eap_counters",
+        command="show datapath debug eap counters",
+        description="EAP termination debug counters.",
+        cache_tier="realtime",
+    ),
+
+    # --- compression ----------------------------------------------------
+    "compression": ShowPreset(
+        key="compression",
+        command="show datapath compression",
+        description="Datapath compression statistics.",
+        cache_tier="realtime",
+    ),
+    "compression_counters": ShowPreset(
+        key="compression_counters",
+        command="show datapath compression counters",
+        description="Datapath compression counters.",
+        cache_tier="realtime",
+    ),
+
+    # --- IP fragmentation / reassembly ---------------------------------
+    "ip_fragment_table": ShowPreset(
+        key="ip_fragment_table",
+        command="show datapath ip-fragment-table",
+        description="IP fragment table; pass arg='ipv4' or 'ipv6' to scope.",
+        cache_tier="realtime",
+    ),
+    "ip_reassembly": ShowPreset(
+        key="ip_reassembly",
+        command="show datapath ip-reassembly",
+        description="IP reassembly stats; pass arg='counters' / 'ipv4' / 'ipv6'.",
+        cache_tier="realtime",
+    ),
+
+    # --- exception / error / heartbeat ---------------------------------
+    "exception_counters": ShowPreset(
+        key="exception_counters",
+        command="show datapath exception counters",
+        description="Datapath exception counters.",
+        cache_tier="realtime",
+    ),
+    "error_counters": ShowPreset(
+        key="error_counters",
+        command="show datapath error counters",
+        description="Datapath error counters.",
+        cache_tier="realtime",
+    ),
+    "heartbeat_stats": ShowPreset(
+        key="heartbeat_stats",
+        command="show datapath heartbeat stats",
+        description="Datapath heartbeat stats (controller-side).",
+        cache_tier="realtime",
+    ),
+
+    # --- acl / ipsec-map / misc ---------------------------------------
+    "acl": ShowPreset(
+        key="acl",
+        command="show datapath acl",
+        description="Datapath ACL entries (resolved against role/session ACLs).",
+        cache_tier="realtime",
+    ),
+    "ipsec_map": ShowPreset(
+        key="ipsec_map",
+        command="show datapath ipsec-map",
+        description="Datapath IPsec map (per-tunnel SA mapping).",
+        cache_tier="realtime",
+    ),
+    "outstanding_buffers": ShowPreset(
+        key="outstanding_buffers",
+        command="show datapath outstanding-buffers",
+        description="Outstanding buffer count per CPU.",
+        cache_tier="realtime",
+    ),
+    "papi_counters": ShowPreset(
+        key="papi_counters",
+        command="show datapath papi counters",
+        description="PAPI control-plane counters.",
+        cache_tier="realtime",
+    ),
+}
+
+# Convenience aliases for ergonomic variant names.
+_DATAPATH_ALIASES: dict[str, str] = {
+    "tunnels": "tunnel",
+    "sessions": "session",
+    "users": "user",
+    "vlans": "vlan",
 }
 
 
@@ -994,13 +1670,28 @@ DOMAINS: dict[str, DomainSpec] = {
         domain="cluster",
         default_variant="lc_cluster_group_membership",
         presets=CLUSTER_PRESETS,
-        description="Cluster / HA / master redundancy.",
+        aliases=_CLUSTER_ALIASES,
+        description=(
+            "Cluster / HA / master redundancy. Most ``show lc-cluster *`` and"
+            " ``show datapath cluster *`` commands run on MD; aos8_cluster"
+            " auto-targets MD for those presets."
+        ),
     ),
     "rf": DomainSpec(
         domain="rf",
         default_variant="arm_rf_summary",
         presets=RF_PRESETS,
         description="Curated RF monitoring views.",
+    ),
+    "datapath": DomainSpec(
+        domain="datapath",
+        default_variant="tunnel",
+        presets=DATAPATH_PRESETS,
+        aliases=_DATAPATH_ALIASES,
+        description=(
+            "``show datapath *`` forwarding-plane diagnostics for traffic-related"
+            " troubleshooting (bridge / cluster / session / tunnel / user / vlan / ...)."
+        ),
     ),
 }
 

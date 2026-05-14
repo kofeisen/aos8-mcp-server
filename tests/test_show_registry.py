@@ -6,6 +6,7 @@ import pytest
 
 from aos8_mcp.show_registry import (
     AP_PRESETS,
+    DATAPATH_PRESETS,
     DOMAINS,
     domain_catalog,
     full_catalog,
@@ -32,6 +33,7 @@ def test_all_expected_domains_present() -> None:
         "aaa",
         "cluster",
         "rf",
+        "datapath",
     }
     assert expected.issubset(DOMAINS.keys())
 
@@ -106,11 +108,65 @@ def test_full_catalog_contains_meta_and_variants() -> None:
         ("network", "ip_route", "show ip route"),
         ("aaa", "authentication_server_all", "show aaa authentication-server all"),
         ("cluster", "lc_cluster_group_membership", "show lc-cluster group-membership"),
+        ("cluster", "lc_cluster_heartbeat_counters", "show lc-cluster heartbeat counters"),
+        ("cluster", "lc_cluster_load_distribution_ap", "show lc-cluster load distribution ap"),
+        ("cluster", "lc_cluster_history", "show lc-cluster history"),
+        ("cluster", "lc_cluster_vlan_probe_status", "show lc-cluster vlan-probe status"),
+        ("cluster", "datapath_cluster", "show datapath cluster"),
+        ("cluster", "datapath_cluster_details", "show datapath cluster details"),
         ("rf", "arm_rf_summary", "show ap arm rf-summary"),
         ("log", "errorlog", "show log errorlog all"),
+        ("datapath", "tunnel", "show datapath tunnel"),
+        ("datapath", "tunnel_counters", "show datapath tunnel counters"),
+        ("datapath", "bridge", "show datapath bridge"),
+        ("datapath", "session_session_id", "show datapath session session-id"),
+        ("datapath", "vlan_table", "show datapath vlan table"),
     ],
 )
 def test_known_presets_have_expected_commands(
     domain: str, variant: str, expected_cmd: str
 ) -> None:
     assert resolve_preset(domain, variant).command == expected_cmd
+
+
+def test_cluster_aliases_resolve_to_canonical_keys() -> None:
+    assert resolve_preset("cluster", "group_membership").key == "lc_cluster_group_membership"
+    assert resolve_preset("cluster", "heartbeat_counters").key == "lc_cluster_heartbeat_counters"
+    assert resolve_preset("cluster", "load_ap").key == "lc_cluster_load_distribution_ap"
+    assert resolve_preset("cluster", "load_client").key == "lc_cluster_load_distribution_client"
+    assert resolve_preset("cluster", "bucket_essid").key == "lc_cluster_bucket_distribution_essid"
+    assert resolve_preset("cluster", "dp_cluster_details").key == "datapath_cluster_details"
+
+
+def test_every_lc_cluster_preset_uses_lc_cluster_command() -> None:
+    """All ``lc_cluster_*`` presets must invoke ``show lc-cluster ...``."""
+    from aos8_mcp.show_registry import CLUSTER_PRESETS
+
+    for key, preset in CLUSTER_PRESETS.items():
+        if not key.startswith("lc_cluster_"):
+            continue
+        assert preset.command.startswith("show lc-cluster "), (
+            f"{key} does not start with 'show lc-cluster ': {preset.command!r}"
+        )
+
+
+def test_datapath_default_variant_is_tunnel() -> None:
+    assert get_domain("datapath").default_variant == "tunnel"
+    assert resolve_preset("datapath", None).command == "show datapath tunnel"
+
+
+def test_datapath_aliases_resolve_to_singular_forms() -> None:
+    assert resolve_preset("datapath", "tunnels").key == "tunnel"
+    assert resolve_preset("datapath", "sessions").key == "session"
+    assert resolve_preset("datapath", "users").key == "user"
+    assert resolve_preset("datapath", "vlans").key == "vlan"
+
+
+def test_every_datapath_preset_runs_show_datapath_command() -> None:
+    for key, preset in DATAPATH_PRESETS.items():
+        assert preset.command.startswith("show datapath "), (
+            f"{key} command does not start with 'show datapath ': {preset.command!r}"
+        )
+        assert preset.cache_tier == "realtime", (
+            f"{key} cache_tier should be 'realtime' (forwarding state changes constantly)"
+        )
