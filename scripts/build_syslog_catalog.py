@@ -2,7 +2,7 @@
 """Build ``aos8_mcp/data/syslog_catalog.json`` from the ArubaOS Syslog Reference Guide.
 
 Preferred source (8.10):
-  data/ArubaOS-8.10.0.0-Syslog-Reference-Guide.xlsx
+  aos8_mcp/data/ArubaOS-8.10.0.0-Syslog-Reference-Guide.xlsx
 
 Fallback (bootstrap when the xlsx is not present):
   Parses the ArubaOS 6.x Syslog Messages PDF text export bundled for development.
@@ -21,7 +21,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_XLSX = ROOT / "data" / "ArubaOS-8.10.0.0-Syslog-Reference-Guide.xlsx"
+DEFAULT_XLSX = ROOT / "aos8_mcp" / "data" / "ArubaOS-8.10.0.0-Syslog-Reference-Guide.xlsx"
 OUT_PATH = ROOT / "aos8_mcp" / "data" / "syslog_catalog.json"
 FALLBACK_PDF_TEXT = (
     Path(__file__).resolve().parents[2]

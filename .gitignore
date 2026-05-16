@@ -10,3 +10,4 @@ aos8.devices.yaml
 dist/
 build/
 log/*.json
+log/log_summaries/*
