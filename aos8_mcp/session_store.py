@@ -2,8 +2,13 @@
 
 A session owns:
   * one MM HTTP client (always required) and
-  * any number of MD HTTP clients (lazily logged in when a fallback to MD
-    happens or the caller explicitly targets an MD).
+  * one HTTP client per configured MD management IP.
+
+On creation the store logs into the MM and **every** configured MD in parallel,
+so ``UIDARUBA`` / CSRF tokens exist for each device before any data tool runs.
+Each ``show`` call (unless served from cache) re-authenticates as needed, then
+optionally logs out again after the HTTP request to avoid exhausting concurrent
+API sessions on the controllers (see ``AOS8_LOGOUT_AFTER_EACH_TOOL``).
 
 The store also hosts the shared :class:`ShowResultCache` so cached entries are
 purged when a session is destroyed.
@@ -13,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -22,12 +28,20 @@ from aos8_mcp.aruba_client import (
     ArubaAuthExpired,
     ArubaDeviceClient,
     ArubaHttpError,
+    configured_uidaruba_ttl_seconds,
     _looks_like_not_on_conductor,
 )
 from aos8_mcp.cache import CacheTier, ShowResultCache
 
 
 log = logging.getLogger("aos8_mcp.session_store")
+
+_LOGOUT_AFTER_EACH_TOOL = os.environ.get("AOS8_LOGOUT_AFTER_EACH_TOOL", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
 
 
 @dataclass
@@ -62,12 +76,20 @@ class Aos8ServerSession:
         return self.md_logins.get(md_ip, (self.username, self.password))
 
     async def ensure_md_client(self, md_ip: str) -> ArubaDeviceClient:
+        """Return a logged-in client for ``md_ip``, creating it in parallel with other MDs."""
+        md_ip = md_ip.strip()
         async with self._md_lock:
-            if md_ip in self.md_clients:
-                return self.md_clients[md_ip]
-            user, pwd = self._md_credentials(md_ip)
-            cli = ArubaDeviceClient(md_ip, self.verify_ssl)
-            await cli.login(user, pwd)
+            existing = self.md_clients.get(md_ip)
+        if existing is not None:
+            return existing
+        user, pwd = self._md_credentials(md_ip)
+        cli = ArubaDeviceClient(md_ip, self.verify_ssl)
+        await cli.login(user, pwd)
+        async with self._md_lock:
+            dup = self.md_clients.get(md_ip)
+            if dup is not None:
+                await cli.aclose()
+                return dup
             self.md_clients[md_ip] = cli
             return cli
 
@@ -99,6 +121,8 @@ class Aos8ServerSession:
             "verify_ssl": self.verify_ssl,
             "age_seconds": round(now - self.created_at_monotonic, 1),
             "idle_seconds": round(self.idle_seconds(now), 1),
+            "uidaruba_ttl_seconds": int(configured_uidaruba_ttl_seconds()),
+            "logout_after_each_tool": _LOGOUT_AFTER_EACH_TOOL,
         }
 
 
@@ -130,6 +154,11 @@ class SessionStore:
     @property
     def reap_interval(self) -> float:
         return self._reap_interval
+
+    @property
+    def logout_after_each_tool(self) -> bool:
+        """When true, each uncached ``show`` ends with ``/v1/api/logout`` to free controller slots."""
+        return _LOGOUT_AFTER_EACH_TOOL
 
     def _maybe_start_reaper(self) -> None:
         """Start the background reaper lazily, bound to the running event loop."""
@@ -204,7 +233,13 @@ class SessionStore:
             md_ips=ips,
             md_logins=logins,
         )
-        login_body = await sess.login_mm()
+        try:
+            login_body = await sess.login_mm()
+            if ips:
+                await asyncio.gather(*(sess.ensure_md_client(ip) for ip in ips))
+        except Exception:
+            await sess.close_all()
+            raise
         async with self._lock:
             self._sessions[sid] = sess
         self._maybe_start_reaper()
@@ -238,7 +273,7 @@ class SessionStore:
         cache_tier: CacheTier | None = None,
     ) -> dict[str, Any]:
         sess = await self.get(session_id)
-        if not sess.mm_client or not sess.mm_client.tokens:
+        if not sess.mm_client or not sess.mm_client.has_stored_credentials:
             raise ArubaHttpError("MM session not logged in")
         sess.touch()
 
@@ -363,12 +398,17 @@ class SessionStore:
     async def _run_show_with_relogin(
         client: ArubaDeviceClient, command: str
     ) -> tuple[int, Any]:
-        """Wrap ``show_command`` with a single auto-relogin retry on token expiry."""
+        """Login (or refresh by TTL), run ``show``, then optionally logout to free controller slots."""
+        await client.ensure_ready_for_show()
         try:
-            return await client.show_command(command)
-        except ArubaAuthExpired:
-            await client.relogin()
-            return await client.show_command(command)
+            try:
+                return await client.show_command(command)
+            except ArubaAuthExpired:
+                await client.relogin()
+                return await client.show_command(command)
+        finally:
+            if _LOGOUT_AFTER_EACH_TOOL:
+                await client.logout()
 
 
 def _build_tool_result(

@@ -16,7 +16,10 @@ async def test_ap_diagnose_includes_arm_rf_summary_step_by_default(
     captured: list[tuple[str, Any, str | None]] = []
 
     async def fake_gather(
-        sid: str, steps: list[tuple[str, Any, str | None]]
+        sid: str,
+        steps: list[tuple[str, Any, str | None]],
+        *,
+        md_bias_domains: list[str | None] | None = None,
     ) -> list[dict[str, Any]]:
         captured[:] = steps
         return [
@@ -47,7 +50,10 @@ async def test_ap_diagnose_include_rf_false_skips_arm_step(
     captured: list[tuple[str, Any, str | None]] = []
 
     async def fake_gather(
-        sid: str, steps: list[tuple[str, Any, str | None]]
+        sid: str,
+        steps: list[tuple[str, Any, str | None]],
+        *,
+        md_bias_domains: list[str | None] | None = None,
     ) -> list[dict[str, Any]]:
         captured[:] = steps
         return [

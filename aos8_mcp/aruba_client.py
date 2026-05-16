@@ -8,11 +8,28 @@ when the controller expires the session.
 from __future__ import annotations
 
 import json
+import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
+
+
+def _uidaruba_ttl_seconds() -> float:
+    """API session cookie lifetime (Aruba commonly ~15 minutes). Overridable for labs."""
+    return float(os.environ.get("AOS8_UIDARUBA_TTL_SECONDS", "900"))
+
+
+def configured_uidaruba_ttl_seconds() -> float:
+    """Same value used for proactive token refresh before ``show_command``."""
+    return _uidaruba_ttl_seconds()
+
+
+def _uidaruba_refresh_skew_seconds() -> float:
+    """Re-login this many seconds *before* the TTL window ends."""
+    return float(os.environ.get("AOS8_UIDARUBA_REFRESH_SKEW_SECONDS", "30"))
 
 
 NOT_ON_CONDUCTOR_MARKERS = (
@@ -90,6 +107,7 @@ class ArubaDeviceClient:
             follow_redirects=True,
         )
         self.tokens: LoginTokens | None = None
+        self._token_obtained_at: float | None = None
         self._username: str | None = None
         self._password: str | None = None
 
@@ -99,6 +117,11 @@ class ArubaDeviceClient:
     @property
     def is_authenticated(self) -> bool:
         return self.tokens is not None
+
+    @property
+    def has_stored_credentials(self) -> bool:
+        """True after a successful ``login`` (even if ``logout`` cleared ``tokens``)."""
+        return self._username is not None and self._password is not None
 
     async def login(self, username: str, password: str) -> dict[str, Any]:
         url = f"{self.base_url}/v1/api/login"
@@ -117,6 +140,7 @@ class ArubaDeviceClient:
         if not uid or not csrf:
             raise ArubaHttpError("Login response missing UIDARUBA or X-CSRF-Token")
         self.tokens = LoginTokens(uidaruba=str(uid), csrf=str(csrf))
+        self._token_obtained_at = time.monotonic()
         self._username = username
         self._password = password
         return body
@@ -126,6 +150,7 @@ class ArubaDeviceClient:
         if self._username is None or self._password is None:
             raise ArubaHttpError("Cannot re-login: credentials were never supplied")
         self.tokens = None
+        self._token_obtained_at = None
         await self.login(self._username, self._password)
 
     async def logout(self) -> None:
@@ -140,6 +165,25 @@ class ArubaDeviceClient:
         except httpx.HTTPError:
             pass
         self.tokens = None
+        self._token_obtained_at = None
+
+    def _token_ttl_expired(self) -> bool:
+        if self.tokens is None or self._token_obtained_at is None:
+            return False
+        ttl = _uidaruba_ttl_seconds()
+        skew = _uidaruba_refresh_skew_seconds()
+        if ttl <= 0:
+            return False
+        return (time.monotonic() - self._token_obtained_at) > max(0.0, ttl - skew)
+
+    async def ensure_ready_for_show(self) -> None:
+        """Ensure valid UIDARUBA/X-CSRF-Token before ``show_command`` (login / relogin / TTL refresh)."""
+        if self._username is None or self._password is None:
+            raise ArubaHttpError("Not logged in; call login first")
+        if not self.tokens:
+            await self.relogin()
+        elif self._token_ttl_expired():
+            await self.relogin()
 
     async def show_command(self, command: str) -> tuple[int, Any]:
         """Execute one ``show`` call. Raises ``ArubaAuthExpired`` for stale tokens."""

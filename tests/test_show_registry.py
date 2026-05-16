@@ -112,9 +112,14 @@ def test_full_catalog_contains_meta_and_variants() -> None:
         ("system", "switchinfo", "show switchinfo"),
         ("system", "switch_software", "show switch software"),
         ("system", "switch_ip", "show switch ip"),
+        ("clients", "user_table", "show user-table"),
+        ("clients", "user", "show user"),
+        ("clients", "user_table_summary", "show user-table summary"),
+        ("clients", "user_table_unique", "show user-table unique"),
         ("clients", "global_user_table_list", "show global-user-table list"),
         ("aps", "database", "show ap database"),
         ("wlan", "virtual_ap", "show wlan virtual-ap"),
+        ("wlan", "wlan_profiles", "show wlan"),
         ("system", "license_summary", "show license summary"),
         ("network", "ip_route", "show ip route"),
         ("aaa", "authentication_server_all", "show aaa authentication-server all"),
@@ -190,6 +195,19 @@ def test_cluster_aliases_resolve_to_canonical_keys() -> None:
     assert resolve_preset("cluster", "load_client").key == "lc_cluster_load_distribution_client"
     assert resolve_preset("cluster", "bucket_essid").key == "lc_cluster_bucket_distribution_essid"
     assert resolve_preset("cluster", "dp_cluster_details").key == "datapath_cluster_details"
+
+
+def test_wlan_aliases_resolve_to_canonical_keys() -> None:
+    assert resolve_preset("wlan", "vap").key == "virtual_ap"
+    assert resolve_preset("wlan", "ssid").key == "ssid_profile"
+    assert resolve_preset("wlan", "profiles").key == "wlan_profiles"
+    assert resolve_preset("wlan", "wmm_tm").key == "wmm_traffic_management_profile"
+
+
+def test_clients_aliases_resolve_to_canonical_keys() -> None:
+    assert resolve_preset("clients", "global").key == "global_user_table_list"
+    assert resolve_preset("clients", "ut").key == "user_table"
+    assert resolve_preset("clients", "table_summary").key == "user_table_summary"
 
 
 def test_controllers_short_aliases_resolve_to_canonical_keys() -> None:

@@ -34,7 +34,7 @@ from typing import Any, Literal
 from mcp.server.fastmcp import FastMCP
 from pydantic import ValidationError
 
-from aos8_mcp.aruba_client import ArubaHttpError
+from aos8_mcp.aruba_client import ArubaHttpError, configured_uidaruba_ttl_seconds
 from aos8_mcp.devices_config import (
     default_devices_config_path,
     load_devices_config,
@@ -210,27 +210,45 @@ mcp = FastMCP(
     "aos8-mcp-server",
     instructions=(
         "Aruba AOS 8.x read-only MCP for MM+MD architectures.\n"
+        "\n"
         "Workflow:\n"
-        "  1) Create a session via aos8_session_create_from_config (preferred) or aos8_session_create.\n"
-        "  2) Call domain tools with the returned session_id. Use aos8_catalog to discover\n"
-        "     available presets across domains: controllers, clients, aps, wlan, log,\n"
-        "     system, network, aaa, cluster, rf, airmatch, datapath.\n"
-        "  3) Use aos8_show for ad-hoc 'show ...' commands; use aos8_*_diagnose for\n"
-        "     guided AP/client/system troubleshooting; use aos8_datapath /\n"
-        "     aos8_forwarding_overview for forwarding-plane troubleshooting; use\n"
-        "     aos8_cluster for cluster/HA views (auto-targets MD); use aos8_airmatch\n"
-        "     for AirMatch optimization/solution/debug on the conductor.\n"
-        "  4) Tear down via aos8_session_destroy when finished.\n"
+        "  1) Create a session: aos8_session_create_from_config (preferred) or aos8_session_create.\n"
+        "     This logs into the MM and every configured MD once (UIDARUBA ~15m TTL) so tokens exist\n"
+        "     before data tools; each uncached show then re-uses stored credentials and, by default,\n"
+        "     logs out after the HTTP request to avoid exhausting concurrent API sessions on devices.\n"
+        "  2) Pass session_id into every data tool. Session creation returns no device show output.\n"
+        "  3) If unsure which variant= preset key to use, call aos8_catalog (domain=... optional)\n"
+        "     first; domain tools resolve variant -> 'show ...' from an internal preset registry.\n"
+        "  4) For a single read-only CLI string not covered by presets, use aos8_show, or pass\n"
+        "     command_override on a domain tool (must start with 'show ').\n"
+        "  5) Tear down via aos8_session_destroy when finished.\n"
+        "\n"
+        "Tool selection (map user intent -> tool; pick ONE primary path, then narrow):\n"
+        "  - Controller / switch hierarchy: aos8_controllers\n"
+        "  - Wireless clients (``show user`` / ``show user-table``, MD-first): aos8_clients\n"
+        "  - AP inventory / radios / BSS: aos8_aps; one AP multi-step bundle: aos8_ap_diagnose(ap_name)\n"
+        "  - WLAN / SSID / VAP profiles (``show wlan``, MD-first): aos8_wlan\n"
+        "  - Controller logs: aos8_log (use max_lines for tails)\n"
+        "  - License / platform / switchinfo: aos8_system\n"
+        "  - VLAN / ports / routing / ARP / DHCP bindings: aos8_network\n"
+        "  - AAA / RADIUS / dot1x / captive portal / state messages (MD-first): aos8_aaa\n"
+        "    (profile_name and arg apply only to documented variants on that tool)\n"
+        "  - LC-cluster + datapath cluster HA views: aos8_cluster (MD-only presets auto-target MD)\n"
+        "  - RF monitoring + ``show rf`` profiles (MD-first): aos8_rf (arg appends profile names / trailing tokens)\n"
+        "  - AirMatch jobs / solutions / debug on MM: aos8_airmatch\n"
+        "  - Datapath forwarding (sessions, tunnels, users, vlan, utilization/cpu for datapath CPU):\n"
+        "    aos8_datapath; multi-step forwarding snapshot: aos8_forwarding_overview\n"
+        "  - Quick controller health bundle: aos8_health_overview(session_id)\n"
+        "  - Guided client troubleshooting: aos8_client_diagnose\n"
+        "\n"
         "Notes:\n"
-        "  - The session creation tool itself does not return device data; data tools\n"
-        "    must run after a session exists.\n"
-        "  - Output always contains 'raw' (original payload) and 'normalized' (heuristic\n"
-        "    summary). Use max_lines / max_rows / cli_suffix='| include ...' to control size.\n"
-        "  - MM-first execution with automatic fallback to MD on conductor-restricted commands.\n"
-        "  - Cluster-specific note: 'show lc-cluster *' and 'show datapath cluster *'\n"
-        "    only work on MDs; aos8_cluster picks the first configured MD by default\n"
-        "    or honors an explicit md_ip parameter.\n"
-        "  - Configure '#no paging' on controllers to avoid pagination artifacts.\n"
+        "  - Every successful data response includes 'raw' and 'normalized'. Prefer normalized\n"
+        "    for counts/summaries; drill into raw when needed. Use max_lines / max_rows /\n"
+        "    cli_suffix='| include ...' to cap huge tables.\n"
+        "  - Execution is MM-first with automatic MD fallback when the MM rejects a command.\n"
+        "  - aos8_cluster: 'show lc-cluster *' and 'show datapath cluster *' run on MDs; use md_ip\n"
+        "    or the default first configured MD.\n"
+        "  - Configure '#no paging' on controllers to reduce pagination artifacts.\n"
     ),
     host=_HOST,
     port=_PORT,
@@ -251,6 +269,94 @@ async def _with_normalize(
     return out
 
 
+def _clients_command_prefers_md(command: str) -> bool:
+    """True for CLI-Bank user-plane ``show`` commands that should hit an MD first.
+
+    See ``sh-user.htm`` / ``sh-user-tab.htm``: ``show user``, ``show user-table``,
+    ``show user-summary``, and ``show datapath user …`` forwarding views.
+    ``show global-user-table`` stays on the conductor-first path (hierarchy roster).
+    """
+    c = command.strip().lower()
+    if c.startswith("show global-user-table"):
+        return False
+    if c.startswith("show user-table"):
+        return True
+    if c.startswith("show user-summary"):
+        return True
+    if c == "show user" or c.startswith("show user "):
+        return True
+    if c.startswith("show datapath user"):
+        return True
+    return False
+
+
+def _wlan_command_prefers_md(command: str) -> bool:
+    """True for the entire ``show wlan`` family (CLI-Bank ``sh-wlan.htm``)."""
+    c = command.strip().lower()
+    return c == "show wlan" or c.startswith("show wlan ")
+
+
+def _should_apply_md_first_bias(cmd: str, md_bias_domain: str | None) -> bool:
+    """MD-first when command matches global rules or the tool domain (aaa / rf)."""
+    if _clients_command_prefers_md(cmd) or _wlan_command_prefers_md(cmd):
+        return True
+    c = cmd.strip().lower()
+    if md_bias_domain == "aaa":
+        return c == "show aaa" or c.startswith("show aaa ")
+    if md_bias_domain == "rf":
+        return (
+            c == "show ap"
+            or c.startswith("show ap ")
+            or c == "show rf"
+            or c.startswith("show rf ")
+        )
+    return False
+
+
+async def _fetch_show_with_md_first_bias(
+    sid: str,
+    cmd: str,
+    *,
+    use_cache: bool,
+    cache_tier: CacheTier | None,
+    md_ip: str | None = None,
+    md_bias_domain: str | None = None,
+) -> tuple[dict[str, Any], str | None]:
+    """MM→MD fallback, except selected commands go straight to a configured MD when possible."""
+    if not _should_apply_md_first_bias(cmd, md_bias_domain):
+        raw = await store.show_with_mm_then_md_fallback(
+            sid, cmd, use_cache=use_cache, cache_tier=cache_tier
+        )
+        return raw, None
+
+    try:
+        sess = await store.get(sid)
+    except KeyError:
+        raise
+    chosen = _coerce_optional_str(md_ip) or (sess.md_ips[0] if sess.md_ips else None)
+    if chosen:
+        raw = await store.show_on_target(
+            sid,
+            cmd,
+            target="md",
+            md_ip=chosen,
+            use_cache=use_cache,
+            cache_tier=cache_tier,
+        )
+        return raw, None
+
+    note = (
+        "MD-first command but no MD is configured for this session; "
+        "using MM then automatic MD fallback. Configure md_ips on the session "
+        "(e.g. aos8.devices.yaml) or pass md_ip on aos8_clients / aos8_wlan / "
+        "aos8_aaa / aos8_rf."
+    )
+    raw = await store.show_with_mm_then_md_fallback(
+        sid, cmd, use_cache=use_cache, cache_tier=cache_tier
+    )
+    return raw, note
+
+
 async def _execute_preset(
     sid: str,
     preset: ShowPreset,
@@ -261,8 +367,10 @@ async def _execute_preset(
     use_cache: bool = True,
     max_lines: int | None = None,
     max_rows: int | None = None,
+    md_ip: str | None = None,
+    md_bias_domain: str | None = None,
 ) -> dict[str, Any]:
-    """Resolve a preset's CLI, run it via the MM→MD fallback path, normalize, truncate."""
+    """Resolve a preset's CLI, run it (MM→MD fallback, with MD-first bias where applicable), normalize."""
     base = preset.command
     if preset.needs_profile_name:
         pname = _coerce_optional_str(profile_name) or preset.profile_name_default
@@ -276,14 +384,22 @@ async def _execute_preset(
     if err:
         return {"ok": False, "error": err}
     try:
-        raw = await store.show_with_mm_then_md_fallback(
-            sid, cmd, use_cache=use_cache, cache_tier=preset.cache_tier
+        raw, bias_note = await _fetch_show_with_md_first_bias(
+            sid,
+            cmd,
+            use_cache=use_cache,
+            cache_tier=preset.cache_tier,
+            md_ip=md_ip,
+            md_bias_domain=md_bias_domain,
         )
     except KeyError as e:
         return {"ok": False, "error": str(e)}
     except ArubaHttpError as e:
         return {"ok": False, "error": str(e)}
     enriched = await _with_normalize(raw, preset.normalizer)
+    if bias_note:
+        prev = enriched.get("note")
+        enriched["note"] = f"{prev}\n{bias_note}" if prev else bias_note
     enriched = apply_truncation(enriched, max_lines=max_lines, max_rows=max_rows)
     enriched["variant"] = preset.key
     enriched["cache_tier"] = preset.cache_tier
@@ -304,6 +420,7 @@ async def _run_domain(
     max_rows: int | None = None,
     default_max_lines: int | None = None,
     default_max_rows: int | None = None,
+    md_ip: str | None = None,
 ) -> dict[str, Any]:
     sid = _coerce_optional_str(session_id)
     if not sid:
@@ -324,14 +441,24 @@ async def _run_domain(
         if err:
             return {"ok": False, "error": err}
         try:
-            raw = await store.show_with_mm_then_md_fallback(
-                sid, cmd, use_cache=use_cache, cache_tier="near_realtime"
+            raw, bias_note = await _fetch_show_with_md_first_bias(
+                sid,
+                cmd,
+                use_cache=use_cache,
+                cache_tier="near_realtime",
+                md_ip=_coerce_optional_str(md_ip)
+                if domain in ("clients", "wlan", "aaa", "rf")
+                else None,
+                md_bias_domain=domain,
             )
         except KeyError as e:
             return {"ok": False, "error": str(e)}
         except ArubaHttpError as e:
             return {"ok": False, "error": str(e)}
         enriched = await _with_normalize(raw, "generic")
+        if bias_note:
+            prev = enriched.get("note")
+            enriched["note"] = f"{prev}\n{bias_note}" if prev else bias_note
         enriched = apply_truncation(
             enriched, max_lines=effective_max_lines, max_rows=effective_max_rows
         )
@@ -353,6 +480,10 @@ async def _run_domain(
         use_cache=use_cache,
         max_lines=effective_max_lines,
         max_rows=effective_max_rows,
+        md_ip=_coerce_optional_str(md_ip)
+        if domain in ("clients", "wlan", "aaa", "rf")
+        else None,
+        md_bias_domain=domain,
     )
     if result.get("ok"):
         result["domain"] = domain
@@ -398,6 +529,9 @@ async def aos8_session_create_from_config(config_path: str = "") -> dict[str, An
         "mm_ip": cfg.mm.ip.strip(),
         "md_ips": md_ips,
         "login_status_str": gr.get("status_str") if isinstance(gr, dict) else None,
+        "uidaruba_ttl_seconds": int(configured_uidaruba_ttl_seconds()),
+        "logout_after_each_tool": store.logout_after_each_tool,
+        "eager_login_device_count": 1 + len(md_ips),
         "hint": "Credentials are kept in process memory only. Call aos8_session_destroy when done.",
     }
 
@@ -436,6 +570,9 @@ async def aos8_session_create(
         "mm_ip": mm_ip.strip(),
         "md_ips": list(md_ips or []),
         "login_status_str": gr.get("status_str") if isinstance(gr, dict) else None,
+        "uidaruba_ttl_seconds": int(configured_uidaruba_ttl_seconds()),
+        "logout_after_each_tool": store.logout_after_each_tool,
+        "eager_login_device_count": 1 + len(list(md_ips or [])),
         "hint": "Credentials are kept in process memory only. Call aos8_session_destroy when done.",
     }
 
@@ -455,10 +592,14 @@ async def aos8_session_destroy(session_id: str) -> dict[str, Any]:
 
 @mcp.tool()
 async def aos8_session_status(session_id: str) -> dict[str, Any]:
-    """Self-check: is the session alive? which MM/MD clients are still logged in?
+    """Self-check: is the session alive? which MM/MD clients still hold active UIDARUBA tokens?
 
     Useful when a previous tool call returns an auth error and you want to
     confirm whether the auto-relogin succeeded.
+
+    Note: when ``AOS8_LOGOUT_AFTER_EACH_TOOL`` is enabled (default), most tools
+    end with an API logout, so ``mm_logged_in`` / MD ``logged_in`` are often
+    false even though credentials remain in memory until ``aos8_session_destroy``.
     """
     sid = _coerce_optional_str(session_id)
     if not sid:
@@ -597,15 +738,31 @@ async def aos8_controllers(
 @mcp.tool()
 async def aos8_clients(
     session_id: str,
-    variant: str = "global_user_table_list",
+    variant: str = "user_table",
+    md_ip: str | None = None,
     cli_suffix: str | None = None,
     command_override: str | None = None,
     use_cache: bool = True,
     max_rows: int | None = None,
 ) -> dict[str, Any]:
-    """Wireless user views (default: ``show global-user-table list``).
+    """Wireless user views — CLI-Bank ``show user`` / ``show user-table`` (MD-first).
 
-    To find users on a given AP, pass ``cli_suffix='| include AP-name'``.
+    Official references:
+      * [show user](https://arubanetworking.hpe.com/techdocs/CLI-Bank/Content/aos8/sh-user.htm)
+      * [show user-table](https://arubanetworking.hpe.com/techdocs/CLI-Bank/Content/aos8/sh-user-tab.htm)
+
+    Default preset is ``user_table`` (``show user-table``): full per-client context on
+    the **managed device**. When ``md_ips`` are configured on the session, these
+    commands are sent to the first MD immediately (no wasted MM round-trip); pass
+    ``md_ip`` to pick a specific member.
+
+    Conductor-wide roster (all MDs) remains available as ``variant='global_user_table_list'``
+    (``show global-user-table list``) — that variant keeps the MM-first path.
+
+    Filter examples (append via ``cli_suffix`` with a leading space, not ``|`` unless
+    you intend a pipe filter): ``ap-name <name>``, ``role <role>``, ``mac <addr>``,
+    ``ip <addr>``, ``essid \"My SSID\"``. For AP-name grep-style narrowing you can
+    still use ``cli_suffix='| include <token>'``.
     """
     return await _run_domain(
         session_id=session_id,
@@ -616,6 +773,7 @@ async def aos8_clients(
         use_cache=use_cache,
         max_rows=max_rows,
         default_max_rows=_DEFAULT_TABLE_CAP,
+        md_ip=md_ip,
     )
 
 
@@ -649,15 +807,31 @@ async def aos8_wlan(
     session_id: str,
     variant: str = "virtual_ap",
     profile_name: str | None = None,
+    md_ip: str | None = None,
     cli_suffix: str | None = None,
     command_override: str | None = None,
     use_cache: bool = True,
     max_rows: int | None = None,
 ) -> dict[str, Any]:
-    """``show wlan *`` subcommands (default: ``show wlan virtual-ap``).
+    """WLAN profile views — official ``show wlan`` family (CLI-Bank, MD-first).
 
-    For SSID profile variants pass ``profile_name`` (defaults to ``default``
-    when omitted for ``ssid_profile`` / ``he_ssid_profile`` / ``ht_ssid_profile``).
+    Reference: [show wlan](https://arubanetworking.hpe.com/techdocs/CLI-Bank/Content/aos8/sh-wlan.htm)
+
+    HPE documents the family under Mobility Conductor; this tool still **prefers a
+    managed device** when ``md_ips`` are configured (first member, or ``md_ip``),
+    matching the operational MM+MD workflow used elsewhere (``aos8_clients``).
+
+    Variants mirror CLI-Bank subcommands, including:
+      * ``virtual_ap`` (default), ``wlan_profiles`` (bare ``show wlan`` index)
+      * ``ssid_profile`` / ``he_ssid_profile`` / ``ht_ssid_profile`` — pass
+        ``profile_name`` (defaults to ``default`` when omitted)
+      * ``hotspot``, ``sae_profile``, ``dot11k_profile``, ``dot11r_profile``
+      * ``rrm_ie_profile``, ``six_ghz_rrm_ie_profile``, ``anyspot_profile``
+      * ``edca_parameters_profile``, ``mu_edca_parameters_profile``
+      * ``traffic_management_profile``, ``wmm_traffic_management_profile``
+      * ``bcn_rpt_req_profile``, ``tsm_req_profile``, ``client_wlan_profile``
+
+    Short aliases (e.g. ``vap``, ``ssid``, ``wmm_tm``) resolve via ``aos8_catalog``.
     """
     return await _run_domain(
         session_id=session_id,
@@ -669,6 +843,7 @@ async def aos8_wlan(
         use_cache=use_cache,
         max_rows=max_rows,
         default_max_rows=_DEFAULT_TABLE_CAP,
+        md_ip=md_ip,
     )
 
 
@@ -855,13 +1030,18 @@ async def aos8_aaa(
     variant: str = "state_messages",
     profile_name: str | None = None,
     arg: str | None = None,
+    md_ip: str | None = None,
     cli_suffix: str | None = None,
     command_override: str | None = None,
     use_cache: bool = True,
     max_lines: int | None = None,
     max_rows: int | None = None,
 ) -> dict[str, Any]:
-    """AAA authentication servers, profiles, and runtime diagnostics.
+    """AAA authentication servers, profiles, and runtime diagnostics (MD-first).
+
+    When ``md_ips`` are configured on the session, ``show aaa …`` commands are
+    sent to the first MD immediately (or to ``md_ip`` when set), consistent with
+    ``aos8_clients`` / ``aos8_wlan``.
 
     Aligns with CLI-Bank ``show aaa …`` families (authentication-server,
     authentication dot1x/mac/captive-portal/stateful-dot1x, state messages).
@@ -895,6 +1075,7 @@ async def aos8_aaa(
     suf = _coerce_optional_str(cli_suffix)
     override = _coerce_optional_str(command_override)
     v = _coerce_optional_str(variant)
+    md_eff = _coerce_optional_str(md_ip)
 
     effective_max_lines = max_lines if max_lines is not None else _DEFAULT_LOG_TAIL
     effective_max_rows = max_rows if max_rows is not None else _DEFAULT_TABLE_CAP
@@ -905,14 +1086,22 @@ async def aos8_aaa(
         if err:
             return {"ok": False, "error": err}
         try:
-            raw = await store.show_with_mm_then_md_fallback(
-                sid, cmd, use_cache=use_cache, cache_tier="near_realtime"
+            raw, bias_note = await _fetch_show_with_md_first_bias(
+                sid,
+                cmd,
+                use_cache=use_cache,
+                cache_tier="near_realtime",
+                md_ip=md_eff,
+                md_bias_domain="aaa",
             )
         except KeyError as e:
             return {"ok": False, "error": str(e)}
         except ArubaHttpError as e:
             return {"ok": False, "error": str(e)}
         enriched = await _with_normalize(raw, "generic")
+        if bias_note:
+            prev = enriched.get("note")
+            enriched["note"] = f"{prev}\n{bias_note}" if prev else bias_note
         enriched = apply_truncation(
             enriched, max_lines=effective_max_lines, max_rows=effective_max_rows
         )
@@ -939,6 +1128,8 @@ async def aos8_aaa(
         use_cache=use_cache,
         max_lines=effective_max_lines,
         max_rows=effective_max_rows,
+        md_ip=md_eff,
+        md_bias_domain="aaa",
     )
     if result.get("ok"):
         result["domain"] = "aaa"
@@ -1091,12 +1282,16 @@ async def aos8_rf(
     session_id: str,
     variant: str = "arm_rf_summary",
     arg: str | None = None,
+    md_ip: str | None = None,
     cli_suffix: str | None = None,
     command_override: str | None = None,
     use_cache: bool = True,
     max_rows: int | None = None,
 ) -> dict[str, Any]:
-    """RF monitoring plus RF profile configuration (official ``show rf`` family).
+    """RF monitoring plus RF profile configuration (official ``show rf`` family, MD-first).
+
+    When ``md_ips`` are configured, ``show ap …`` and ``show rf …`` presets go to
+    the first MD (or ``md_ip``) without a wasted MM round-trip.
 
     **Operational monitoring** (runtime near-realtime views — mostly ``show ap …``):
       * ``arm_rf_summary`` (default) — per-radio channel / power / noise
@@ -1129,6 +1324,7 @@ async def aos8_rf(
         use_cache=use_cache,
         max_rows=max_rows,
         default_max_rows=_DEFAULT_TABLE_CAP,
+        md_ip=md_ip,
     )
 
 
@@ -1354,9 +1550,23 @@ async def aos8_datapath(
 # Composite diagnostics
 # ===========================================================================
 async def _gather_steps(
-    sid: str, steps: list[tuple[str, ShowPreset, str | None]]
+    sid: str,
+    steps: list[tuple[str, ShowPreset, str | None]],
+    *,
+    md_bias_domains: list[str | None] | None = None,
 ) -> list[dict[str, Any]]:
-    """Run several presets in parallel; return one summary dict per step."""
+    """Run several presets in parallel; return one summary dict per step.
+
+    ``md_bias_domains`` (optional, same length as ``steps``) selects MD-first
+    routing for composite helpers that mix domains (e.g. ``aaa`` / ``rf``).
+    """
+    n = len(steps)
+    domains = list(md_bias_domains) if md_bias_domains else [None] * n
+    if len(domains) < n:
+        domains.extend([None] * (n - len(domains)))
+    elif len(domains) > n:
+        domains = domains[:n]
+
     coros = [
         _execute_preset(
             sid,
@@ -1365,8 +1575,9 @@ async def _gather_steps(
             use_cache=True,
             max_lines=_DEFAULT_LOG_TAIL,
             max_rows=_DEFAULT_TABLE_CAP,
+            md_bias_domain=domains[i],
         )
-        for _, preset, suffix in steps
+        for i, (_, preset, suffix) in enumerate(steps)
     ]
     results = await asyncio.gather(*coros, return_exceptions=True)
     out: list[dict[str, Any]] = []
@@ -1443,7 +1654,14 @@ async def aos8_ap_diagnose(
     if include_log_tail:
         steps.append(("recent_log", resolve_preset("log", "all"), inc))
 
-    results = await _gather_steps(sid, steps)
+    md_bias: list[str | None] = [None, None, None]
+    if include_rf:
+        md_bias.append("rf")
+    md_bias.extend([None, None])
+    if include_log_tail:
+        md_bias.append(None)
+
+    results = await _gather_steps(sid, steps, md_bias_domains=md_bias)
     summary = _summarize_ap_diagnose(name, results)
     return {"ok": True, "ap_name": name, "summary": summary, "steps": results}
 
@@ -1499,7 +1717,11 @@ async def aos8_client_diagnose(
     if include_log_tail:
         steps.append(("recent_log", resolve_preset("log", "all"), inc))
 
-    results = await _gather_steps(sid, steps)
+    md_bias = [None, None, None, "aaa"]
+    if include_log_tail:
+        md_bias.append(None)
+
+    results = await _gather_steps(sid, steps, md_bias_domains=md_bias)
     return {
         "ok": True,
         "identifier": ident,

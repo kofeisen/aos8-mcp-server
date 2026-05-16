@@ -180,28 +180,98 @@ _CONTROLLERS_ALIASES: dict[str, str] = {
 
 # ---------------------------------------------------------------------------
 # Domain: clients (associated wireless users)
+#
+# CLI-Bank: ``sh-user.htm`` (``show user``) and ``sh-user-tab.htm``
+# (``show user-table``) — enable/config on Mobility Conductor *and* MD; for
+# MM+MD deployments the actionable user plane is normally queried on an MD,
+# so the server layer MD-first routing keys off these command prefixes.
 # ---------------------------------------------------------------------------
+_CLIENTS_ALIASES: dict[str, str] = {
+    "global": "global_user_table_list",
+    "global_list": "global_user_table_list",
+    "global_count": "global_user_table_count",
+    "ut": "user_table",
+    "user_tab": "user_table",
+    "table_summary": "user_table_summary",
+    "table_unique": "user_table_unique",
+    "table_verbose": "user_table_verbose",
+    "table_debug": "user_table_debug",
+}
+
 CLIENTS_PRESETS: dict[str, ShowPreset] = {
     "global_user_table_list": ShowPreset(
         key="global_user_table_list",
         command="show global-user-table list",
-        description="Hierarchy-wide list of associated wireless users (one row per user).",
+        description=(
+            "Mobility Conductor hierarchy-wide user roster (one row per user). "
+            "Stays on the MM path first (not the MD-first ``show user*`` family)."
+        ),
         normalizer="global_users",
         cache_tier="near_realtime",
     ),
     "global_user_table_count": ShowPreset(
         key="global_user_table_count",
         command="show global-user-table count",
-        description="Aggregate counters across the user table.",
+        description="Aggregate counters across the global user table.",
         normalizer="generic",
+        cache_tier="near_realtime",
+    ),
+    "user": ShowPreset(
+        key="user",
+        command="show user",
+        description=(
+            "Associated-user roster (``show user``, CLI-Bank ``sh-user.htm``). "
+            "Filters such as ``ap-name``, ``ap-group``, ``role``, ``mac``, ``ip``, "
+            "``essid``, ``authentication-method …``, ``rows …`` append after the "
+            "base command — pass them via ``cli_suffix`` "
+            "(e.g. ``cli_suffix='role employee'``)."
+        ),
+        normalizer="user_table",
         cache_tier="near_realtime",
     ),
     "user_table": ShowPreset(
         key="user_table",
         command="show user-table",
-        description="Local user table on the controller (verbose).",
+        description=(
+            "Full user-table view (``show user-table``, CLI-Bank ``sh-user-tab.htm``) "
+            "including mobility, AAA, datapath session context, and 802.11 stats. "
+            "Official filters (``ap-name``, ``mac``, ``ip``, ``summary``, …) can be "
+            "passed via ``cli_suffix``; dedicated lighter presets exist for "
+            "``summary`` / ``unique`` / ``verbose`` / ``debug``."
+        ),
         normalizer="user_table",
         cache_tier="near_realtime",
+    ),
+    "user_table_summary": ShowPreset(
+        key="user_table_summary",
+        command="show user-table summary",
+        description=(
+            "Authentication and encryption summary for wired or wireless clients "
+            "(lighter than the default ``user_table`` dump)."
+        ),
+        normalizer="user_table",
+        cache_tier="near_realtime",
+    ),
+    "user_table_unique": ShowPreset(
+        key="user_table_unique",
+        command="show user-table unique",
+        description="User-table rows for clients that have a valid IP address.",
+        normalizer="user_table",
+        cache_tier="near_realtime",
+    ),
+    "user_table_verbose": ShowPreset(
+        key="user_table_verbose",
+        command="show user-table verbose",
+        description="Full verbose user-table (large; use ``max_rows`` / filtering).",
+        normalizer="user_table",
+        cache_tier="near_realtime",
+    ),
+    "user_table_debug": ShowPreset(
+        key="user_table_debug",
+        command="show user-table debug",
+        description="All user-table data for debugging (very large).",
+        normalizer="user_table",
+        cache_tier="realtime",
     ),
     "user_summary": ShowPreset(
         key="user_summary",
@@ -634,9 +704,41 @@ _AP_ALIASES = {
 }
 
 # ---------------------------------------------------------------------------
-# Domain: wlan (``show wlan *``)
+# Domain: wlan (``show wlan *``) — CLI-Bank ``sh-wlan.htm``
 # ---------------------------------------------------------------------------
+_WLAN_ALIASES: dict[str, str] = {
+    "vap": "virtual_ap",
+    "virtual_ap_profile": "virtual_ap",
+    "profiles": "wlan_profiles",
+    "wlan_index": "wlan_profiles",
+    "ssid": "ssid_profile",
+    "he": "he_ssid_profile",
+    "ht": "ht_ssid_profile",
+    "wmm_tm": "wmm_traffic_management_profile",
+    "wmm_traffic": "wmm_traffic_management_profile",
+    "6g_rrm": "six_ghz_rrm_ie_profile",
+    "6ghz_rrm": "six_ghz_rrm_ie_profile",
+    "bcn_rpt": "bcn_rpt_req_profile",
+    "tsm_req": "tsm_req_profile",
+    "mu_edca": "mu_edca_parameters_profile",
+    "edca": "edca_parameters_profile",
+    "tm_profile": "traffic_management_profile",
+    "rrm": "rrm_ie_profile",
+    "11k": "dot11k_profile",
+    "11r": "dot11r_profile",
+    "via_wlan": "client_wlan_profile",
+}
+
 WLAN_PRESETS: dict[str, ShowPreset] = {
+    "wlan_profiles": ShowPreset(
+        key="wlan_profiles",
+        command="show wlan",
+        description=(
+            "Top-level WLAN profile index (lists profile categories / entry points "
+            "per CLI-Bank ``sh-wlan.htm``)."
+        ),
+        cache_tier="static",
+    ),
     "virtual_ap": ShowPreset(
         key="virtual_ap",
         command="show wlan virtual-ap",
@@ -2052,9 +2154,13 @@ DOMAINS: dict[str, DomainSpec] = {
     ),
     "clients": DomainSpec(
         domain="clients",
-        default_variant="global_user_table_list",
+        default_variant="user_table",
         presets=CLIENTS_PRESETS,
-        description="Wireless users / user-table views.",
+        aliases=_CLIENTS_ALIASES,
+        description=(
+            "Wireless users: ``show user`` / ``show user-table`` (MD-first), "
+            "``show global-user-table`` (conductor roster), and related views."
+        ),
     ),
     "aps": DomainSpec(
         domain="aps",
@@ -2067,7 +2173,11 @@ DOMAINS: dict[str, DomainSpec] = {
         domain="wlan",
         default_variant="virtual_ap",
         presets=WLAN_PRESETS,
-        description="``show wlan *`` subcommands and profiles.",
+        aliases=_WLAN_ALIASES,
+        description=(
+            "WLAN profiles (``show wlan …``, CLI-Bank ``sh-wlan.htm``); MD-first "
+            "execution in the MCP server when MDs are configured."
+        ),
     ),
     "log": DomainSpec(
         domain="log",
@@ -2094,8 +2204,7 @@ DOMAINS: dict[str, DomainSpec] = {
         aliases=_AAA_ALIASES,
         description=(
             "AAA authentication servers, profiles, and runtime state "
-            "(``show aaa authentication-server …``, ``show aaa authentication …``, "
-            "``show aaa state …``)."
+            "(``show aaa …``); ``aos8_aaa`` targets MD first when session MDs exist."
         ),
     ),
     "cluster": DomainSpec(
@@ -2116,7 +2225,7 @@ DOMAINS: dict[str, DomainSpec] = {
         aliases=_RF_ALIASES,
         description=(
             "RF monitoring (``show ap arm …``, radio tables) plus RF configuration"
-            " profiles (``show rf …``, Mobility Conductor)."
+            " profiles (``show rf …``); ``aos8_rf`` targets MD first when session MDs exist."
         ),
     ),
     "airmatch": DomainSpec(
