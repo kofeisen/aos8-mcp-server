@@ -133,6 +133,41 @@ def _escape_for_include(token: str) -> str:
     return token.replace("|", "").strip()
 
 
+_LOG_ALL_CATEGORY = "show log all"
+
+
+def _compose_log_show_command(
+    command: str,
+    *,
+    tail: int | None,
+    include_rotated: bool | None = None,
+) -> str:
+    """Build ``show log`` CLI per CLI-Bank.
+
+    Typed logs use either a line count (``show log errorlog 100``) or trailing
+    ``all`` for rotated files (``show log errorlog all``) — not both. The
+    ``show log all`` category only accepts an optional line count.
+    """
+    cmd = command.strip()
+    if not cmd.lower().startswith("show log "):
+        if tail is not None:
+            return f"{cmd} {int(tail)}"
+        return cmd
+
+    if cmd == _LOG_ALL_CATEGORY:
+        if tail is not None:
+            return f"{cmd} {int(tail)}"
+        return cmd
+
+    base = cmd[:-4].rstrip() if cmd.endswith(" all") else cmd
+
+    if tail is not None:
+        return f"{base} {int(tail)}"
+
+    want_all = include_rotated if include_rotated is not None else True
+    return f"{base} all" if want_all else base
+
+
 def _resolve_log_tail_limits(
     tail: int | None,
     max_lines: int | None,
@@ -880,24 +915,24 @@ async def aos8_log(
     command_override: str | None = None,
     use_cache: bool = False,
     max_lines: int | None = None,
+    include_rotated: bool | None = None,
 ) -> dict[str, Any]:
-    """Controller log views — ``show log [<category>] [all] [<N>]`` with built-in filtering.
+    """Controller log views — CLI-Bank ``show log <type> [<number>|all]``.
 
-    AOS 8 supports two device-side filters that this tool composes for you:
-      * ``tail=<N>``   — appends ``<N>`` to the CLI so the controller returns
-        only the last N lines (capped at ``AOS8_LOG_MAX_TAIL``, default 200).
-        This is much cheaper than fetching the entire log buffer and trimming
-        server-side (which is what ``max_lines`` does).
-      * ``match=<token>`` — shortcut for ``cli_suffix='| include <token>'``;
-        the token has any ``|`` characters stripped to keep the include-regex
-        sane. Both ``tail`` and ``match`` can be combined.
+    AOS 8 device-side options this tool composes for you:
+      * ``tail=<N>``   — last N lines (``show log errorlog 100``). Capped at
+        ``AOS8_LOG_MAX_TAIL`` (default 200). Mutually exclusive with ``all``.
+      * ``include_rotated`` — when ``tail`` is omitted, append ``all`` for
+        rotated files (default True → ``show log security all``). Ignored when
+        ``tail`` is set.
+      * ``match=<token>`` — shortcut for ``cli_suffix='| include <token>'``.
 
     Example: ``aos8_log(sid, "security", tail=100, match="auth")`` invokes
-    ``show log security all 100 | include auth``.
+    ``show log security 100 | include auth``.
 
     Variants (call ``aos8_catalog(domain='log')`` for the full list — mirrors
     every official ``show log`` subcommand):
-      * ``all`` (default)
+      * ``all`` (default) — ``show log all`` / ``show log all <N>``
       * ``errorlog`` / ``security`` / ``system`` / ``user`` / ``wireless``
       * ``ap_debug`` / ``arm`` / ``arm_user_debug`` / ``network`` /
         ``peer_debug`` / ``user_debug``  (hyphenated names also accepted)
@@ -942,8 +977,9 @@ async def aos8_log(
         normalizer = preset.normalizer
         variant_used = preset.key
 
-    if tail_applied is not None:
-        base_cmd = f"{base_cmd} {int(tail_applied)}"
+    base_cmd = _compose_log_show_command(
+        base_cmd, tail=tail_applied, include_rotated=include_rotated
+    )
 
     if match_token:
         token = _escape_for_include(match_token)

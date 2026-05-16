@@ -100,7 +100,7 @@ aos8-mcp-server
 | 本机身份/状态 | `aos8_system(..., variant="switchinfo")` 一次拿到 hostname/系统时间/OS 版本/uptime/重启原因/管理 IP/角色；或 `variant="switch_software"` 看本机软件信息 |
 | 控制器层级 | `aos8_controllers(..., variant="switches_summary")`、`variant="switches_state_inprogress"` 等；短别名 `summary` / `debug` / `regulatory` / `state_down` 均可 |
 | RF | 运行时：`aos8_rf(..., variant="arm_rf_summary")`；配置：`variant="rf_arm_profile"`、`rf_spectrum_profile` 等（见 `aos8_catalog(domain='rf')`）；指定某 profile 名时加 `arg="default"` |
-| 日志 | `aos8_log(..., variant="errorlog", tail=100, match="auth")` 等价于 `show log errorlog all 100 | include auth`（`tail` 超过 `AOS8_LOG_MAX_TAIL` 会被压到上限）；变体覆盖官方所有 `show log` 子类 |
+| 日志 | `aos8_log(..., variant="errorlog", tail=100, match="auth")` → `show log errorlog 100 \| include auth`；无 `tail` 时默认 `show log errorlog all`（行数与 `all` 互斥） |
 | 转发面快照 | `aos8_forwarding_overview(session_id)`；可选 `ap_name` 过滤该 AP 的隧道 |
 | 转发排错 | `aos8_datapath(..., variant="tunnel")`、`variant="bridge"` + `ap_name="AP-M020"`、`variant="session_table"` + `arg="10.1.1.1"`、`variant="tunnel_id"` + `arg="12 trusted-vlan"` |
 | AirMatch | `aos8_airmatch(session_id, variant="optimization")`；全网方案见 `variant="solution_list_all"`；AP 维度用 `ap_name` 或 `arg`（如 `debug_history`）；完整列表 `aos8_catalog(domain='airmatch')` |

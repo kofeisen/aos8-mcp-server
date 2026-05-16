@@ -302,11 +302,8 @@ CLIENTS_PRESETS: dict[str, ShowPreset] = {
 # Every category mirrors an official ``show log <category>`` subcommand:
 #   all / ap-debug / arm / arm-user-debug / errorlog / network / peer-debug
 #   / security / system / user / user-debug / wireless
-# The trailing ``all`` keyword pulls in rotated files (e.g., security log +
-# security.1, security.2, ...). aos8_log also supports a device-side
-# ``tail=<N>`` parameter that appends ``<N>`` to the CLI so the controller
-# itself trims to the last N lines — much cheaper than fetching the full
-# buffer and trimming server-side.
+# CLI-Bank: ``show log <type> <number>`` OR ``show log <type> all`` (not both).
+# Presets store only ``show log <type>``; aos8_log composes tail / all.
 # ---------------------------------------------------------------------------
 LOG_PRESETS: dict[str, ShowPreset] = {
     "all": ShowPreset(
@@ -322,77 +319,77 @@ LOG_PRESETS: dict[str, ShowPreset] = {
     ),
     "errorlog": ShowPreset(
         key="errorlog",
-        command="show log errorlog all",
+        command="show log errorlog",
         description="Errors recorded in the controller log.",
         normalizer="log_text",
         cache_tier="realtime",
     ),
     "security": ShowPreset(
         key="security",
-        command="show log security all",
+        command="show log security",
         description="Security log entries (auth, captive portal, role transitions).",
         normalizer="log_text",
         cache_tier="realtime",
     ),
     "system": ShowPreset(
         key="system",
-        command="show log system all",
+        command="show log system",
         description="System log entries.",
         normalizer="log_text",
         cache_tier="realtime",
     ),
     "user": ShowPreset(
         key="user",
-        command="show log user all",
+        command="show log user",
         description="User-facing log entries (association, authentication).",
         normalizer="log_text",
         cache_tier="realtime",
     ),
     "wireless": ShowPreset(
         key="wireless",
-        command="show log wireless all",
+        command="show log wireless",
         description="Wireless subsystem log entries.",
         normalizer="log_text",
         cache_tier="realtime",
     ),
     "ap_debug": ShowPreset(
         key="ap_debug",
-        command="show log ap-debug all",
+        command="show log ap-debug",
         description="AP-side debug logs collected by the controller.",
         normalizer="log_text",
         cache_tier="realtime",
     ),
     "arm": ShowPreset(
         key="arm",
-        command="show log arm all",
+        command="show log arm",
         description="ARM (Adaptive Radio Management) log entries.",
         normalizer="log_text",
         cache_tier="realtime",
     ),
     "arm_user_debug": ShowPreset(
         key="arm_user_debug",
-        command="show log arm-user-debug all",
+        command="show log arm-user-debug",
         description="ARM user-debug log entries (per-client RF debug capture).",
         normalizer="log_text",
         cache_tier="realtime",
     ),
     "network": ShowPreset(
         key="network",
-        command="show log network all",
+        command="show log network",
         description="Network subsystem log entries (routing, interfaces, ARP).",
         normalizer="log_text",
         cache_tier="realtime",
     ),
     "peer_debug": ShowPreset(
         key="peer_debug",
-        command="show log peer-debug all",
+        command="show log peer-debug",
         description="Peer / cluster debug log entries.",
         normalizer="log_text",
         cache_tier="realtime",
     ),
     "user_debug": ShowPreset(
         key="user_debug",
-        command="show log user-debug all",
+        command="show log user-debug",
         description=(
             "User debug log entries (set by ``logging level debugging user mac/ip ...``)."
         ),

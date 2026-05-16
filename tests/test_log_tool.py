@@ -15,6 +15,32 @@ import pytest
 from aos8_mcp import server
 
 
+@pytest.mark.parametrize(
+    ("command", "tail", "include_rotated", "expected"),
+    [
+        ("show log errorlog", 100, None, "show log errorlog 100"),
+        ("show log errorlog", 100, True, "show log errorlog 100"),
+        ("show log errorlog", None, None, "show log errorlog all"),
+        ("show log errorlog", None, False, "show log errorlog"),
+        ("show log errorlog all", 100, None, "show log errorlog 100"),
+        ("show log all", 50, None, "show log all 50"),
+        ("show log all", None, True, "show log all"),
+    ],
+)
+def test_compose_log_show_command_cli_bank_order(
+    command: str,
+    tail: int | None,
+    include_rotated: bool | None,
+    expected: str,
+) -> None:
+    assert (
+        server._compose_log_show_command(
+            command, tail=tail, include_rotated=include_rotated
+        )
+        == expected
+    )
+
+
 @pytest.fixture()
 def fake_session(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """Patch ``store.get`` and ``store.show_with_mm_then_md_fallback``.
@@ -80,9 +106,18 @@ async def test_tail_is_appended_to_command(fake_session: dict[str, Any]) -> None
         session_id="sid-1", variant="errorlog", tail=50
     )
     assert out["ok"] is True
-    assert fake_session["command"] == "show log errorlog all 50"
+    assert fake_session["command"] == "show log errorlog 50"
     assert out["tail_applied"] == 50
     assert "tail_capped" not in out
+
+
+@pytest.mark.asyncio
+async def test_tail_ignores_include_rotated(fake_session: dict[str, Any]) -> None:
+    out = await server.aos8_log(
+        session_id="sid-1", variant="errorlog", tail=100, include_rotated=True
+    )
+    assert out["ok"] is True
+    assert fake_session["command"] == "show log errorlog 100"
 
 
 @pytest.mark.asyncio
@@ -91,7 +126,7 @@ async def test_tail_above_max_is_capped_for_cli(fake_session: dict[str, Any]) ->
         session_id="sid-1", variant="errorlog", tail=500
     )
     assert out["ok"] is True
-    assert fake_session["command"] == "show log errorlog all 200"
+    assert fake_session["command"] == "show log errorlog 200"
     assert out["tail_requested"] == 500
     assert out["tail_applied"] == 200
     assert out["tail_capped"] is True
@@ -110,7 +145,7 @@ async def test_match_becomes_include_pipe(fake_session: dict[str, Any]) -> None:
 async def test_tail_and_match_combine_with_tail_before_pipe(
     fake_session: dict[str, Any],
 ) -> None:
-    """``tail`` must be appended before the pipe filter."""
+    """``tail`` is mutually exclusive with ``all``; pipe filter follows the show clause."""
     out = await server.aos8_log(
         session_id="sid-1",
         variant="security",
@@ -118,7 +153,7 @@ async def test_tail_and_match_combine_with_tail_before_pipe(
         match="auth",
     )
     assert out["ok"] is True
-    assert fake_session["command"] == "show log security all 200 | include auth"
+    assert fake_session["command"] == "show log security 200 | include auth"
     assert out["tail_capped"] is True
 
 
@@ -153,7 +188,7 @@ async def test_hyphenated_variant_alias_resolves(fake_session: dict[str, Any]) -
     """Users can pass the official hyphenated category name."""
     out = await server.aos8_log(session_id="sid-1", variant="peer-debug", tail=10)
     assert out["ok"] is True
-    assert fake_session["command"] == "show log peer-debug all 10"
+    assert fake_session["command"] == "show log peer-debug 10"
     assert out["variant"] == "peer_debug"
 
 
@@ -192,7 +227,7 @@ async def test_tail_raises_max_lines_when_explicit_max_is_lower(
         session_id="sid-1", variant="user", tail=100, max_lines=50
     )
     assert out["ok"] is True
-    assert fake_session["command"] == "show log user all 100"
+    assert fake_session["command"] == "show log user 100"
     assert out["tail_applied"] == 100
 
 
