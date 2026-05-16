@@ -1,4 +1,4 @@
-"""HTTP client for AOS8 MM/MD login, logout, and showcommand API.
+"""HTTP client for AOS8 MM/MD login and showcommand API.
 
 The client owns its own cookie jar and login tokens. Credentials are kept
 locally (in-process only) so an authenticated connection can re-login itself
@@ -80,9 +80,32 @@ def _looks_like_not_on_conductor(payload: Any) -> bool:
     return any(m.lower() in lower for m in NOT_ON_CONDUCTOR_MARKERS)
 
 
+def _is_log_show_payload(payload: Any) -> bool:
+    """``show log`` bodies often mention auth failures; do not treat those as API auth errors."""
+    if not isinstance(payload, dict):
+        return False
+    fmt = payload.get("_format")
+    if fmt == "log_xml_wrapper":
+        return True
+    if fmt == "text":
+        raw = str(payload.get("_raw_text", ""))
+        if "<my_xml_tag" in raw.lower():
+            return True
+        # Multi-line text is almost always log output, not an API error page.
+        if raw.count("\n") >= 3:
+            return True
+    return False
+
+
 def _looks_like_auth_failure(status: int, payload: Any) -> bool:
     if status in _AUTH_HTTP_STATUSES:
         return True
+    if _is_log_show_payload(payload):
+        return False
+    if isinstance(payload, dict):
+        gr = payload.get("_global_result")
+        if isinstance(gr, dict):
+            return str(gr.get("status", "0")) != "0"
     blob = payload
     if not isinstance(blob, str):
         try:
@@ -120,7 +143,7 @@ class ArubaDeviceClient:
 
     @property
     def has_stored_credentials(self) -> bool:
-        """True after a successful ``login`` (even if ``logout`` cleared ``tokens``)."""
+        """True after a successful ``login`` (tokens may be cleared on TTL refresh)."""
         return self._username is not None and self._password is not None
 
     async def login(self, username: str, password: str) -> dict[str, Any]:
@@ -152,20 +175,6 @@ class ArubaDeviceClient:
         self.tokens = None
         self._token_obtained_at = None
         await self.login(self._username, self._password)
-
-    async def logout(self) -> None:
-        if not self.tokens:
-            return
-        url = f"{self.base_url}/v1/api/logout"
-        try:
-            await self._client.get(
-                url,
-                headers={"X-CSRF-Token": self.tokens.csrf},
-            )
-        except httpx.HTTPError:
-            pass
-        self.tokens = None
-        self._token_obtained_at = None
 
     def _token_ttl_expired(self) -> bool:
         if self.tokens is None or self._token_obtained_at is None:

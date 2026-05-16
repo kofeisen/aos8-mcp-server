@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from aos8_mcp.log_analyze import analyze_log_lines, extract_log_lines
 from aos8_mcp.show_registry import NormalizerHint
 
 
@@ -128,27 +129,12 @@ def _table_shape(
 
 
 def _log_shape(raw: Any) -> dict[str, Any] | None:
-    if isinstance(raw, dict) and raw.get("_format") == "log_xml_wrapper":
-        lines = raw.get("lines") or []
-        return _log_summary(lines)
-    if isinstance(raw, dict) and raw.get("_format") == "text":
-        t = str(raw.get("_raw_text", ""))
-        lines = [ln for ln in t.splitlines() if ln.strip()]
-        return _log_summary(lines)
-    # show log all may also come back as plain JSON dict with a "log" key in
-    # some AOS variants; try to be lenient.
-    if isinstance(raw, dict):
-        for v in raw.values():
-            if isinstance(v, list) and v and isinstance(v[0], str):
-                return _log_summary(list(v))
+    lines = extract_log_lines(raw)
+    if not lines and isinstance(raw, dict):
+        return {"kind": "log", "line_count": 0, "summary": analyze_log_lines([])["summary"]}
+    if lines or isinstance(raw, (dict, str)):
+        return analyze_log_lines(lines)
     return None
-
-
-def _log_summary(lines: list[str]) -> dict[str, Any]:
-    n = len(lines)
-    head = lines[:20]
-    tail = lines[-20:] if n > 40 else []
-    return {"kind": "log", "line_count": n, "head": head, "tail": tail}
 
 
 def _ssid_profile(raw: Any) -> dict[str, Any] | None:

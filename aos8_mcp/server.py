@@ -40,6 +40,8 @@ from aos8_mcp.devices_config import (
     load_devices_config,
     resolve_md_logins,
 )
+from aos8_mcp.log_analyze import build_resource_uri
+from aos8_mcp.log_store import persist_log_summary
 from aos8_mcp.normalize import normalize_payload
 from aos8_mcp.session_store import store
 from aos8_mcp.show_registry import (
@@ -72,7 +74,7 @@ store.cache.configure_tier_ttl("near_realtime", _CACHE_DEFAULT_TTL)
 store.cache.configure_tier_ttl("realtime", _CACHE_REALTIME_TTL)
 
 _DEFAULT_LOG_TAIL = int(os.environ.get("AOS8_LOG_DEFAULT_TAIL", "200"))
-_MAX_LOG_TAIL = int(os.environ.get("AOS8_LOG_MAX_TAIL", "200"))
+_MAX_LOG_TAIL = int(os.environ.get("AOS8_LOG_MAX_TAIL", "500"))
 _DEFAULT_TABLE_CAP = int(os.environ.get("AOS8_TABLE_DEFAULT_CAP", "500"))
 
 # Auto-reap idle sessions (in seconds). ``0`` disables the reaper (legacy behavior).
@@ -134,6 +136,52 @@ def _escape_for_include(token: str) -> str:
 
 
 _LOG_ALL_CATEGORY = "show log all"
+_RE_LOG_ALL_HEAD = re.compile(r"^show\s+log\s+all(?:\s+(\d+))?$", re.IGNORECASE)
+
+
+def _split_show_head_and_suffix(command: str) -> tuple[str, str]:
+    """Split at the first ``|`` so tail limits apply only to the ``show log`` clause."""
+    idx = command.find("|")
+    if idx < 0:
+        return command.strip(), ""
+    return command[:idx].strip(), command[idx:].lstrip()
+
+
+def _apply_log_all_tail_if_needed(
+    command: str,
+    *,
+    tail: int | None = None,
+) -> tuple[str, int | None, bool, bool]:
+    """Ensure ``show log all`` always has a device-side line cap (``AOS8_LOG_MAX_TAIL``).
+
+    Returns ``(command, tail_applied, auto_tail_applied, tail_was_capped)``.
+    """
+    head, suffix = _split_show_head_and_suffix(command)
+    m = _RE_LOG_ALL_HEAD.match(head)
+    if not m:
+        return command, tail, False, False
+
+    existing_num = int(m.group(1)) if m.group(1) else None
+    auto = False
+    capped = False
+
+    if tail is not None:
+        applied = tail
+    elif existing_num is not None:
+        applied = existing_num
+    elif _MAX_LOG_TAIL > 0:
+        applied = _MAX_LOG_TAIL
+        auto = True
+    else:
+        return command, tail, False, False
+
+    if _MAX_LOG_TAIL > 0 and applied > _MAX_LOG_TAIL:
+        applied = _MAX_LOG_TAIL
+        capped = True
+
+    new_head = f"show log all {applied}"
+    new_cmd = f"{new_head} {suffix}".strip() if suffix else new_head
+    return new_cmd, applied, auto, capped
 
 
 def _compose_log_show_command(
@@ -148,24 +196,26 @@ def _compose_log_show_command(
     ``all`` for rotated files (``show log errorlog all``) — not both. The
     ``show log all`` category only accepts an optional line count.
     """
-    cmd = command.strip()
-    if not cmd.lower().startswith("show log "):
+    head, suffix = _split_show_head_and_suffix(command.strip())
+    if not head.lower().startswith("show log "):
         if tail is not None:
-            return f"{cmd} {int(tail)}"
-        return cmd
+            head = f"{head} {int(tail)}"
+        return f"{head} {suffix}".strip() if suffix else head
 
-    if cmd == _LOG_ALL_CATEGORY:
+    if head == _LOG_ALL_CATEGORY:
         if tail is not None:
-            return f"{cmd} {int(tail)}"
-        return cmd
+            head = f"{head} {int(tail)}"
+        elif _MAX_LOG_TAIL > 0:
+            head = f"{head} {_MAX_LOG_TAIL}"
+    else:
+        base = head[:-4].rstrip() if head.endswith(" all") else head
+        if tail is not None:
+            head = f"{base} {int(tail)}"
+        else:
+            want_all = include_rotated if include_rotated is not None else True
+            head = f"{base} all" if want_all else base
 
-    base = cmd[:-4].rstrip() if cmd.endswith(" all") else cmd
-
-    if tail is not None:
-        return f"{base} {int(tail)}"
-
-    want_all = include_rotated if include_rotated is not None else True
-    return f"{base} all" if want_all else base
+    return f"{head} {suffix}".strip() if suffix else head
 
 
 def _resolve_log_tail_limits(
@@ -271,8 +321,7 @@ mcp = FastMCP(
         "Workflow:\n"
         "  1) Create a session: aos8_session_create_from_config (preferred) or aos8_session_create.\n"
         "     This logs into the MM and every configured MD once (UIDARUBA ~15m TTL) so tokens exist\n"
-        "     before data tools; each uncached show then re-uses stored credentials and, by default,\n"
-        "     logs out after the HTTP request to avoid exhausting concurrent API sessions on devices.\n"
+        "     before data tools; each uncached show re-uses stored credentials until destroy.\n"
         "  2) Pass session_id into every data tool. Session creation returns no device show output.\n"
         "  3) If unsure which variant= preset key to use, call aos8_catalog (domain=... optional)\n"
         "     first; domain tools resolve variant -> 'show ...' from an internal preset registry.\n"
@@ -286,7 +335,9 @@ mcp = FastMCP(
         "  - AP inventory / radios / BSS: aos8_aps; one AP multi-step bundle: aos8_ap_diagnose(ap_name)\n"
         "  - WLAN / SSID / VAP profiles (``show wlan``, MD-first): aos8_wlan\n"
         "  - Controller logs: aos8_log (tail= device-side last N, capped; prefer a\n"
-        "    specific variant over 'all'; use match= to filter)\n"
+        "    specific variant over 'all'; use match= to filter). ``show log all`` always\n"
+        "    gets AOS8_LOG_MAX_TAIL on the device when tail is omitted (including\n"
+        "    command_override / aos8_show). For MD logs use target='md' and md_ip=.\n"
         "  - License / platform / switchinfo: aos8_system\n"
         "  - VLAN / ports / routing / ARP / DHCP bindings: aos8_network\n"
         "  - AAA / RADIUS / dot1x / captive portal / state messages (MD-first): aos8_aaa\n"
@@ -324,6 +375,106 @@ async def _with_normalize(
 ) -> dict[str, Any]:
     out = dict(result)
     out["normalized"] = normalize_payload(hint, result.get("raw"))
+    return out
+
+
+def _is_show_log_command(command: str) -> bool:
+    c = command.strip().lower()
+    return c == "show log" or c.startswith("show log ")
+
+
+def _normalizer_for_command(command: str) -> NormalizerHint:
+    return "log_text" if _is_show_log_command(command) else "generic"
+
+
+def _log_resource_key(session_id: str, command: str, raw: dict[str, Any]) -> str:
+    host = str(raw.get("target_host") or "")
+    return f"{session_id}:{host}:{command}"
+
+
+async def _fetch_log_show(
+    session_id: str,
+    command: str,
+    *,
+    target: str,
+    md_ip: str | None,
+    use_cache: bool,
+    cache_tier: CacheTier | None,
+) -> dict[str, Any]:
+    """Run ``show log …`` on MM (with MD fallback) or a specific MD."""
+    md_eff = _coerce_optional_str(md_ip)
+    if target == "md":
+        if not md_eff:
+            raise ValueError("md_ip is required when target='md'")
+        return await store.show_on_target(
+            session_id,
+            command,
+            target="md",
+            md_ip=md_eff,
+            use_cache=use_cache,
+            cache_tier=cache_tier,
+        )
+    if target != "mm":
+        raise ValueError("target must be 'mm' or 'md'")
+    return await store.show_with_mm_then_md_fallback(
+        session_id, command, use_cache=use_cache, cache_tier=cache_tier
+    )
+
+
+def _apply_log_tool_enrichments(
+    enriched: dict[str, Any],
+    *,
+    session_id: str,
+    command: str,
+    raw: dict[str, Any],
+    variant_used: str | None = None,
+    tail_requested: int | None = None,
+    tail_applied: int | None = None,
+    tail_capped: bool = False,
+    cache_tier: CacheTier | None = None,
+    persist: bool = True,
+) -> dict[str, Any]:
+    """Attach log summary metadata, execution target, and optional disk record."""
+    norm = enriched.get("normalized")
+    if not isinstance(norm, dict) or norm.get("kind") != "log":
+        return enriched
+
+    out = dict(enriched)
+    summary = norm.setdefault("summary", {})
+    summary["resource_uri"] = build_resource_uri(
+        _log_resource_key(session_id, command, raw)
+    )
+    out["domain"] = "log"
+    out["executed_on"] = raw.get("executed_on")
+    out["target_host"] = raw.get("target_host")
+    out["md_ip_used"] = raw.get("md_ip_used")
+    if variant_used:
+        out["variant"] = variant_used
+    if cache_tier:
+        out["cache_tier"] = cache_tier
+    if tail_applied is not None:
+        out["tail_applied"] = tail_applied
+        if tail_capped and tail_requested is not None:
+            out["tail_requested"] = tail_requested
+            out["tail_capped"] = True
+
+    if persist:
+        summary_path = persist_log_summary(
+            session_id=session_id,
+            command=command,
+            normalized=norm,
+            variant=variant_used,
+            target_host=raw.get("target_host") if isinstance(raw, dict) else None,
+            executed_on=raw.get("executed_on") if isinstance(raw, dict) else None,
+            md_ip_used=raw.get("md_ip_used") if isinstance(raw, dict) else None,
+            extra={
+                "tail_applied": tail_applied,
+                "tail_capped": tail_capped if tail_requested is not None else False,
+                "from_cache": raw.get("from_cache") if isinstance(raw, dict) else None,
+            },
+        )
+        if summary_path:
+            out["summary_file"] = summary_path
     return out
 
 
@@ -438,6 +589,7 @@ async def _execute_preset(
     if extra:
         base = f"{base} {extra}"
     cmd = _compose_command(base, cli_suffix)
+    cmd, _, _, _ = _apply_log_all_tail_if_needed(cmd)
     err = _validate_show_command(cmd)
     if err:
         return {"ok": False, "error": err}
@@ -495,6 +647,7 @@ async def _run_domain(
     # command_override 走旁路：不查注册表，直接执行
     if override:
         cmd = _compose_command(override, suf)
+        cmd, _, _, _ = _apply_log_all_tail_if_needed(cmd)
         err = _validate_show_command(cmd)
         if err:
             return {"ok": False, "error": err}
@@ -588,7 +741,6 @@ async def aos8_session_create_from_config(config_path: str = "") -> dict[str, An
         "md_ips": md_ips,
         "login_status_str": gr.get("status_str") if isinstance(gr, dict) else None,
         "uidaruba_ttl_seconds": int(configured_uidaruba_ttl_seconds()),
-        "logout_after_each_tool": store.logout_after_each_tool,
         "eager_login_device_count": 1 + len(md_ips),
         "hint": "Credentials are kept in process memory only. Call aos8_session_destroy when done.",
     }
@@ -629,7 +781,6 @@ async def aos8_session_create(
         "md_ips": list(md_ips or []),
         "login_status_str": gr.get("status_str") if isinstance(gr, dict) else None,
         "uidaruba_ttl_seconds": int(configured_uidaruba_ttl_seconds()),
-        "logout_after_each_tool": store.logout_after_each_tool,
         "eager_login_device_count": 1 + len(list(md_ips or [])),
         "hint": "Credentials are kept in process memory only. Call aos8_session_destroy when done.",
     }
@@ -637,7 +788,7 @@ async def aos8_session_create(
 
 @mcp.tool()
 async def aos8_session_destroy(session_id: str) -> dict[str, Any]:
-    """Log out the MM and any MD clients, then drop the cached responses."""
+    """Close MM/MD HTTP clients and drop cached responses for this session."""
     sid = _coerce_optional_str(session_id)
     if not sid:
         return {"ok": False, "error": "session_id missing or invalid."}
@@ -654,10 +805,6 @@ async def aos8_session_status(session_id: str) -> dict[str, Any]:
 
     Useful when a previous tool call returns an auth error and you want to
     confirm whether the auto-relogin succeeded.
-
-    Note: when ``AOS8_LOGOUT_AFTER_EACH_TOOL`` is enabled (default), most tools
-    end with an API logout, so ``mm_logged_in`` / MD ``logged_in`` are often
-    false even though credentials remain in memory until ``aos8_session_destroy``.
     """
     sid = _coerce_optional_str(session_id)
     if not sid:
@@ -696,11 +843,15 @@ async def aos8_show(
 
     ``max_lines`` / ``max_rows`` trim the response server-side for log-style
     and table-style outputs, respectively.
+
+    Commands starting with ``show log`` receive the same structured log
+    summary as ``aos8_log`` (including ``target`` / ``md_ip`` routing).
     """
     sid = _coerce_optional_str(session_id)
     if not sid:
         return {"ok": False, "error": "session_id missing or invalid."}
     cmd = (_coerce_optional_str(command) or "").strip()
+    cmd, log_tail_applied, log_auto_tail, log_tail_capped = _apply_log_all_tail_if_needed(cmd)
     err = _validate_show_command(cmd)
     if err:
         return {"ok": False, "error": err}
@@ -718,8 +869,26 @@ async def aos8_show(
         return {"ok": False, "error": str(e)}
     except (ArubaHttpError, ValueError) as e:
         return {"ok": False, "error": str(e)}
-    enriched = await _with_normalize(raw, "generic")
+    hint = _normalizer_for_command(cmd)
+    enriched = await _with_normalize(raw, hint)
     enriched = apply_truncation(enriched, max_lines=max_lines, max_rows=max_rows)
+    if hint == "log_text":
+        enriched = _apply_log_tool_enrichments(
+            enriched,
+            session_id=sid,
+            command=cmd,
+            raw=raw if isinstance(raw, dict) else {},
+            tail_applied=log_tail_applied,
+            tail_capped=log_tail_capped,
+            persist=True,
+        )
+        if log_auto_tail and log_tail_applied is not None:
+            enriched["log_all_tail_auto_applied"] = True
+            enriched["tail_applied"] = log_tail_applied
+    else:
+        enriched["executed_on"] = raw.get("executed_on") if isinstance(raw, dict) else None
+        enriched["target_host"] = raw.get("target_host") if isinstance(raw, dict) else None
+        enriched["md_ip_used"] = raw.get("md_ip_used") if isinstance(raw, dict) else None
     return {"ok": True, **enriched}
 
 
@@ -916,6 +1085,8 @@ async def aos8_log(
     use_cache: bool = False,
     max_lines: int | None = None,
     include_rotated: bool | None = None,
+    target: Literal["mm", "md"] = "mm",
+    md_ip: str | None = None,
 ) -> dict[str, Any]:
     """Controller log views — CLI-Bank ``show log <type> [<number>|all]``.
 
@@ -926,9 +1097,16 @@ async def aos8_log(
         rotated files (default True → ``show log security all``). Ignored when
         ``tail`` is set.
       * ``match=<token>`` — shortcut for ``cli_suffix='| include <token>'``.
+      * ``show log all`` (variant ``all``, ``command_override``, or
+        ``aos8_show``) always gets a device line cap: if you omit ``tail``, the
+        server appends ``AOS8_LOG_MAX_TAIL`` (e.g. ``show log all 200 | include auth``).
 
     Example: ``aos8_log(sid, "security", tail=100, match="auth")`` invokes
     ``show log security 100 | include auth``.
+
+    ``target='md'`` with ``md_ip`` runs on that managed device (not the MM).
+    Default ``target='mm'`` uses the mobility conductor, with automatic MD
+    fallback only when the MM rejects the command.
 
     Variants (call ``aos8_catalog(domain='log')`` for the full list — mirrors
     every official ``show log`` subcommand):
@@ -937,11 +1115,10 @@ async def aos8_log(
       * ``ap_debug`` / ``arm`` / ``arm_user_debug`` / ``network`` /
         ``peer_debug`` / ``user_debug``  (hyphenated names also accepted)
 
-    Output: ``normalized`` contains the parsed log lines (with head/tail
-    summaries); ``max_lines`` applies a final server-side cap (defaulting to
-    ``AOS8_LOG_DEFAULT_TAIL`` = 200). When ``tail`` exceeds ``max_lines``,
-    ``max_lines`` is raised to match the applied ``tail`` so the response is
-    not silently truncated below what the device returned.
+    Output: ``normalized`` is a structured log summary (``summary.time_range``,
+    ``summary.error_groups`` with pattern/count/samples, ``resource_uri``).
+    ``raw`` keeps a tail-trimmed line buffer for drill-down. ``max_lines``
+    caps ``raw`` only; grouping stats reflect the full fetched buffer.
     """
     sid = _coerce_optional_str(session_id)
     if not sid:
@@ -989,15 +1166,27 @@ async def aos8_log(
         suf = f"{include_clause} {suf}".strip() if suf else include_clause
 
     cmd = _compose_command(base_cmd, suf)
+    cmd, all_tail, auto_all, cap_all = _apply_log_all_tail_if_needed(cmd, tail=tail_applied)
+    if all_tail is not None:
+        tail_applied = all_tail
+    if cap_all:
+        tail_capped = True
     err = _validate_show_command(cmd)
     if err:
         return {"ok": False, "error": err}
 
     try:
-        raw = await store.show_with_mm_then_md_fallback(
-            sid, cmd, use_cache=use_cache, cache_tier=cache_tier
+        raw = await _fetch_log_show(
+            sid,
+            cmd,
+            target=target,
+            md_ip=md_ip,
+            use_cache=use_cache,
+            cache_tier=cache_tier,
         )
     except KeyError as e:
+        return {"ok": False, "error": str(e)}
+    except ValueError as e:
         return {"ok": False, "error": str(e)}
     except ArubaHttpError as e:
         return {"ok": False, "error": str(e)}
@@ -1006,15 +1195,23 @@ async def aos8_log(
     enriched = apply_truncation(
         enriched, max_lines=effective_max_lines, max_rows=None
     )
-    enriched["domain"] = "log"
-    if tail_requested is not None:
-        enriched["tail_applied"] = tail_applied
-        if tail_capped:
-            enriched["tail_requested"] = tail_requested
-            enriched["tail_capped"] = True
-    if variant_used:
-        enriched["variant"] = variant_used
-        enriched["cache_tier"] = cache_tier
+    enriched = _apply_log_tool_enrichments(
+        enriched,
+        session_id=sid,
+        command=cmd,
+        raw=raw if isinstance(raw, dict) else {},
+        variant_used=variant_used,
+        tail_requested=tail_requested,
+        tail_applied=tail_applied,
+        tail_capped=tail_capped,
+        cache_tier=cache_tier,
+        persist=True,
+    )
+    head, _ = _split_show_head_and_suffix(cmd)
+    if tail_requested is None and _RE_LOG_ALL_HEAD.match(head):
+        enriched["log_all_tail_auto_applied"] = True
+    elif auto_all and tail_applied is not None:
+        enriched["log_all_tail_auto_applied"] = True
     return {"ok": True, **enriched}
 
 
@@ -1747,7 +1944,13 @@ def _summarize_ap_diagnose(ap_name: str, steps: list[dict[str, Any]]) -> dict[st
         if count is not None:
             out[label] = {"matched_rows": count}
         elif norm.get("kind") == "log":
-            out[label] = {"log_lines": norm.get("line_count_total") or norm.get("line_count")}
+            sm = norm.get("summary") or {}
+            out[label] = {
+                "log_lines": sm.get("total_lines")
+                or norm.get("line_count_total")
+                or norm.get("line_count"),
+                "unique_events": sm.get("unique_events"),
+            }
         else:
             out[label] = {"kind": norm.get("kind") or "unknown"}
     return out
@@ -1848,7 +2051,13 @@ async def aos8_forwarding_overview(
             continue
         norm = s.get("normalized") or {}
         if norm.get("kind") == "log":
-            summary[label] = {"log_lines": norm.get("line_count_total") or norm.get("line_count")}
+            sm = norm.get("summary") or {}
+            summary[label] = {
+                "log_lines": sm.get("total_lines")
+                or norm.get("line_count_total")
+                or norm.get("line_count"),
+                "unique_events": sm.get("unique_events"),
+            }
         elif "count" in norm:
             summary[label] = {
                 "count": norm.get("count_total") or norm.get("count"),

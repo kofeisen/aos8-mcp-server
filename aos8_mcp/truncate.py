@@ -15,6 +15,8 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from aos8_mcp.log_analyze import extract_log_lines
+
 
 def apply_truncation(
     result: dict[str, Any],
@@ -35,10 +37,8 @@ def apply_truncation(
     raw = out.get("raw")
 
     if max_lines is not None and isinstance(norm, dict) and norm.get("kind") == "log":
-        full_lines = _full_log_lines(raw)
-        out["normalized"] = _truncate_log_normalized(
-            norm, max_lines, keep_head_for_log, full_lines
-        )
+        full_lines = extract_log_lines(raw)
+        out["normalized"] = _truncate_log_summary(norm, max_lines, len(full_lines))
         if isinstance(raw, dict):
             out["raw"] = _truncate_log_raw(raw, max_lines, keep_head_for_log)
 
@@ -48,39 +48,20 @@ def apply_truncation(
     return out
 
 
-def _full_log_lines(raw: Any) -> list[str]:
-    if not isinstance(raw, dict):
-        return []
-    lines = raw.get("lines")
-    if isinstance(lines, list):
-        return list(lines)
-    text = raw.get("_raw_text")
-    if isinstance(text, str) and text:
-        return [ln for ln in text.splitlines() if ln.strip()]
-    return []
-
-
-def _truncate_log_normalized(
+def _truncate_log_summary(
     norm: dict[str, Any],
     max_lines: int,
-    keep_head: bool,
-    full_lines: list[str],
+    full_line_count: int,
 ) -> dict[str, Any]:
-    n = int(norm.get("line_count") or len(full_lines))
-    truncated = dict(norm)
-    truncated["line_count_total"] = n
-    if max_lines <= 0 or not full_lines:
-        truncated["head"] = []
-        truncated["tail"] = []
-        return truncated
-    if keep_head:
-        truncated["head"] = full_lines[:max_lines]
-        truncated["tail"] = []
-    else:
-        # Default to keeping the tail N lines in operational scenarios.
-        truncated["tail"] = full_lines[-max_lines:]
-        truncated["head"] = []
-    return truncated
+    """Keep full ``summary`` stats; only annotate that ``raw`` was tail-trimmed."""
+    out = dict(norm)
+    out["line_count_total"] = full_line_count
+    summary = dict(out.get("summary") or {})
+    summary["raw_lines_kept"] = (
+        0 if max_lines <= 0 else min(max_lines, full_line_count)
+    )
+    out["summary"] = summary
+    return out
 
 
 def _truncate_log_raw(raw: dict[str, Any], max_lines: int, keep_head: bool) -> dict[str, Any]:

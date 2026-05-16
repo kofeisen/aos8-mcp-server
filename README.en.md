@@ -19,7 +19,7 @@ A **read-only** MCP server for **Aruba AOS 8.x**: run `show` commands on Mobilit
 | Execution | MM first; on *not applicable on conductor*, fall back to **configured MD order**; on auth expiry, **one automatic re-login** then retry |
 | Tools | Domains: `aos8_controllers`, `aos8_clients`, `aos8_aps`, `aos8_wlan`, `aos8_log`, `aos8_system`, `aos8_network`, `aos8_aaa`, `aos8_cluster`, `aos8_rf`, `aos8_airmatch`, `aos8_datapath`; free-form: `aos8_show`; catalog: `aos8_catalog` |
 | Diagnostics | `aos8_ap_diagnose`, `aos8_client_diagnose`, `aos8_health_overview`, `aos8_forwarding_overview` (parallel `show` chains) |
-| Response | `raw` is the parsed device payload; `normalized` is a heuristic summary (tabular output often has `count` + `items`) |
+| Response | `raw` is the parsed device payload; `normalized` is a heuristic summary (tables: `count`+`items`; logs: structured `summary` with `error_groups`) |
 | Truncation | `max_lines` (logs, default last **200** lines), `max_rows` (tables, default **500** rows) |
 | Cache | Three tiers: `static` / `near_realtime` / `realtime`; see environment variables below |
 
@@ -62,8 +62,9 @@ aos8-mcp-server
 | `AOS8_DEVICES_CONFIG` | Absolute path to the devices YAML |
 | `AOS8_CACHE_TTL_SECONDS` | `near_realtime` tier TTL in seconds (default `15`) |
 | `AOS8_CACHE_STATIC_TTL` / `AOS8_CACHE_REALTIME_TTL` | `static` / `realtime` tiers (defaults `120` / `0`; `0` disables cache for that tier) |
-| `AOS8_LOG_DEFAULT_TAIL` / `AOS8_LOG_MAX_TAIL` / `AOS8_TABLE_DEFAULT_CAP` | Default log truncation, device `tail` cap, max table rows (`200` / `200` / `500`) |
-| `AOS8_SESSION_IDLE_TIMEOUT_SECONDS` | Idle auto logout in seconds (default `1800`; `0` disables) |
+| `AOS8_LOG_DEFAULT_TAIL` / `AOS8_LOG_MAX_TAIL` / `AOS8_TABLE_DEFAULT_CAP` | Default log truncation, device `tail` cap, max table rows (`200` / `500` / `500`) |
+| `AOS8_LOG_SUMMARY_DIR` | When set, write `aos8_log` structured summaries to this directory (**off by default**) |
+| `AOS8_SESSION_IDLE_TIMEOUT_SECONDS` | Idle session reap interval in seconds (default `1800`; `0` disables) |
 | `AOS8_SESSION_IDLE_SCAN_SECONDS` | Idle scan interval (default `60`) |
 | `AOS8_MCP_STATELESS_HTTP` | `true` for stateless HTTP (some UIs need this) |
 
@@ -100,7 +101,7 @@ Example (field names depend on your UI):
 | Local identity/state | `aos8_system(..., variant="switchinfo")` returns hostname / system time / OS version / uptime / reboot cause / management IP / role in one call; `variant="switch_software"` for software/build details |
 | Controller hierarchy | `aos8_controllers(..., variant="switches_summary")`, `variant="switches_state_inprogress"` etc.; short aliases `summary` / `debug` / `regulatory` / `state_down` are accepted |
 | RF | Runtime: `aos8_rf(..., variant="arm_rf_summary")`; RF profiles (`show rf`): variants such as `rf_arm_profile`, `rf_spectrum_profile` — see `aos8_catalog(domain='rf')`; append `arg="default"` for a named profile |
-| Logs | `aos8_log(..., variant="errorlog", tail=100, match="auth")` → `show log errorlog 100 \| include auth`; without `tail`, defaults to `show log errorlog all` (`<N>` and `all` are mutually exclusive) |
+| Logs | `aos8_log(..., tail=100, target="md", md_ip="10.0.10.16")` on a specific MD; default `target="mm"`. `aos8_show` with `show log …` gets the same structured summary and routing |
 | Forwarding snapshot | `aos8_forwarding_overview(session_id)`; pass `ap_name` to also filter tunnels for one AP |
 | Forwarding debug | `aos8_datapath(..., variant="tunnel")`, `variant="bridge"` + `ap_name="AP-M020"`, `variant="session_table"` + `arg="10.1.1.1"`, `variant="tunnel_id"` + `arg="12 trusted-vlan"` |
 | AirMatch | `aos8_airmatch(session_id, variant="optimization")`; use `solution_list_all` for network-wide solutions; `ap_name` or `arg` for AP/debug variants — see `aos8_catalog(domain='airmatch')` |

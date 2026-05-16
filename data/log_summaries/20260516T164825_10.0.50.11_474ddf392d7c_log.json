@@ -1,0 +1,29 @@
+{
+  "recorded_at": "2026-05-16T16:48:25.218818+00:00",
+  "session_id": "NF8EDLmQG6H71ntcqScaMKZj",
+  "command": "show log security | include auth",
+  "variant": null,
+  "target_host": "10.0.50.11",
+  "executed_on": "mm",
+  "md_ip_used": null,
+  "normalized": {
+    "kind": "log",
+    "line_count": 0,
+    "summary": {
+      "time_range": null,
+      "total_lines": 0,
+      "analyzed_lines": 0,
+      "noise_lines": 0,
+      "unique_events": 0,
+      "category_counts": {},
+      "error_groups": [],
+      "catalog_version": "6.x-bootstrap",
+      "resource_uri": "device://logs/474ddf392d7c"
+    }
+  },
+  "meta": {
+    "tail_applied": null,
+    "tail_capped": false,
+    "from_cache": false
+  }
+}

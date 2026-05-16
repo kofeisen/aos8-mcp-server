@@ -17,32 +17,32 @@ def test_no_op_when_both_caps_are_none() -> None:
     assert out is r
 
 
-def test_log_truncate_keeps_tail_by_default() -> None:
+def test_log_truncate_keeps_tail_in_raw_only() -> None:
     r = _log_result(300)
     out = apply_truncation(r, max_lines=10, max_rows=None)
     norm = out["normalized"]
     assert norm["line_count_total"] == 300
-    assert len(norm["tail"]) == 10
-    assert norm["tail"][-1] == "l299"
-    assert norm["head"] == []
+    assert norm["summary"]["total_lines"] == 300
+    assert norm["summary"]["raw_lines_kept"] == 10
     assert len(out["raw"]["lines"]) == 10
+    assert out["raw"]["lines"][-1] == "l299"
 
 
 def test_log_truncate_keep_head_option() -> None:
     r = _log_result(120)
     out = apply_truncation(r, max_lines=5, max_rows=None, keep_head_for_log=True)
     norm = out["normalized"]
-    assert norm["head"] == ["l0", "l1", "l2", "l3", "l4"]
-    assert norm["tail"] == []
+    assert norm["summary"]["raw_lines_kept"] == 5
+    assert out["raw"]["lines"][0] == "l0"
 
 
-def test_log_truncate_zero_returns_empty() -> None:
+def test_log_truncate_zero_clears_raw() -> None:
     r = _log_result(50)
     out = apply_truncation(r, max_lines=0, max_rows=None)
     norm = out["normalized"]
-    assert norm["head"] == []
-    assert norm["tail"] == []
+    assert norm["summary"]["raw_lines_kept"] == 0
     assert norm["line_count_total"] == 50
+    assert out["raw"]["lines"] == []
 
 
 def test_table_truncate_preserves_count_total() -> None:

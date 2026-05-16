@@ -9,3 +9,4 @@ aos8.devices.yaml
 *.egg-info/
 dist/
 build/
+log/*.json

@@ -21,6 +21,7 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
+    "openpyxl>=3.1",
 ]
 
 [project.scripts]
@@ -28,6 +29,9 @@ aos8-mcp-server = "aos8_mcp.server:run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["aos8_mcp"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"aos8_mcp/data/syslog_catalog.json" = "aos8_mcp/data/syslog_catalog.json"
 
 [tool.ruff]
 line-length = 100

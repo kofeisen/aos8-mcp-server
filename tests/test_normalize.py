@@ -46,8 +46,8 @@ def test_log_normalizer_log_xml_wrapper_shape() -> None:
     out = normalize_payload("log_text", raw)
     assert out["kind"] == "log"
     assert out["line_count"] == 60
-    assert out["head"][0] == "l0"
-    assert out["tail"][-1] == "l59"
+    assert out["summary"]["total_lines"] == 60
+    assert "head" not in out
 
 
 def test_log_normalizer_text_format() -> None:
@@ -55,7 +55,7 @@ def test_log_normalizer_text_format() -> None:
     out = normalize_payload("log_text", raw)
     assert out["kind"] == "log"
     assert out["line_count"] == 3
-    assert out["head"] == ["a", "b", "c"]
+    assert out["summary"]["total_lines"] == 3
 
 
 def test_ssid_profile_flattens_parameter_value_rows() -> None:

@@ -19,7 +19,7 @@
 | 执行 | MM 优先；若提示 *not applicable on conductor*，按配置 **MD 顺序** 回落；Token 失效时 **自动重登一次** |
 | 工具 | 领域：`aos8_controllers`、`aos8_clients`、`aos8_aps`、`aos8_wlan`、`aos8_log`、`aos8_system`、`aos8_network`、`aos8_aaa`、`aos8_cluster`、`aos8_rf`、`aos8_airmatch`、`aos8_datapath`；自由：`aos8_show`；目录：`aos8_catalog` |
 | 诊断 | `aos8_ap_diagnose`、`aos8_client_diagnose`、`aos8_health_overview`、`aos8_forwarding_overview`（内部并行多条 `show`） |
-| 响应 | `raw` 为设备原始解析结果；`normalized` 为启发式摘要（表格类常见 `count` + `items`） |
+| 响应 | `raw` 为设备原始解析结果；`normalized` 为启发式摘要（表格类 `count`+`items`；日志类 `summary.error_groups` 等结构化字段） |
 | 裁剪 | `max_lines`（日志，默认保留尾部 200 行）、`max_rows`（表格，默认 500 行） |
 | 缓存 | `static` / `near_realtime` / `realtime` 三档 TTL，见下方环境变量 |
 
@@ -62,7 +62,8 @@ aos8-mcp-server
 | `AOS8_DEVICES_CONFIG` | 设备 YAML 绝对路径 |
 | `AOS8_CACHE_TTL_SECONDS` | `near_realtime` 档 TTL（秒，默认 `15`） |
 | `AOS8_CACHE_STATIC_TTL` / `AOS8_CACHE_REALTIME_TTL` | `static` / `realtime` 档（默认 `120` / `0`，`0` 表示不缓存） |
-| `AOS8_LOG_DEFAULT_TAIL` / `AOS8_LOG_MAX_TAIL` / `AOS8_TABLE_DEFAULT_CAP` | 日志默认截断行数、设备 `tail` 上限、表格最大行数（默认 `200` / `200` / `500`） |
+| `AOS8_LOG_DEFAULT_TAIL` / `AOS8_LOG_MAX_TAIL` / `AOS8_TABLE_DEFAULT_CAP` | 日志默认截断行数、设备 `tail` 上限、表格最大行数（默认 `200` / `500` / `500`） |
+| `AOS8_LOG_SUMMARY_DIR` | 启用后将 `aos8_log` 结构化摘要写入该目录（**默认关闭**；设为空亦关闭） |
 | `AOS8_SESSION_IDLE_TIMEOUT_SECONDS` | 空闲自动登出（秒，默认 `1800`；`0` 关闭） |
 | `AOS8_SESSION_IDLE_SCAN_SECONDS` | 空闲扫描间隔（默认 `60`） |
 | `AOS8_MCP_STATELESS_HTTP` | `true` 时每请求无状态，部分 Web UI 握手更简单 |
@@ -100,7 +101,7 @@ aos8-mcp-server
 | 本机身份/状态 | `aos8_system(..., variant="switchinfo")` 一次拿到 hostname/系统时间/OS 版本/uptime/重启原因/管理 IP/角色；或 `variant="switch_software"` 看本机软件信息 |
 | 控制器层级 | `aos8_controllers(..., variant="switches_summary")`、`variant="switches_state_inprogress"` 等；短别名 `summary` / `debug` / `regulatory` / `state_down` 均可 |
 | RF | 运行时：`aos8_rf(..., variant="arm_rf_summary")`；配置：`variant="rf_arm_profile"`、`rf_spectrum_profile` 等（见 `aos8_catalog(domain='rf')`）；指定某 profile 名时加 `arg="default"` |
-| 日志 | `aos8_log(..., variant="errorlog", tail=100, match="auth")` → `show log errorlog 100 \| include auth`；无 `tail` 时默认 `show log errorlog all`（行数与 `all` 互斥） |
+| 日志 | `aos8_log(..., tail=100, target="md", md_ip="10.0.10.16")` 在指定 MD 上执行；默认 `target="mm"`。`aos8_show` 的 `show log …` 同样支持结构化摘要与 `target`/`md_ip` |
 | 转发面快照 | `aos8_forwarding_overview(session_id)`；可选 `ap_name` 过滤该 AP 的隧道 |
 | 转发排错 | `aos8_datapath(..., variant="tunnel")`、`variant="bridge"` + `ap_name="AP-M020"`、`variant="session_table"` + `arg="10.1.1.1"`、`variant="tunnel_id"` + `arg="12 trusted-vlan"` |
 | AirMatch | `aos8_airmatch(session_id, variant="optimization")`；全网方案见 `variant="solution_list_all"`；AP 维度用 `ap_name` 或 `arg`（如 `debug_history`）；完整列表 `aos8_catalog(domain='airmatch')` |

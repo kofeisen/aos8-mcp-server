@@ -6,9 +6,8 @@ A session owns:
 
 On creation the store logs into the MM and **every** configured MD in parallel,
 so ``UIDARUBA`` / CSRF tokens exist for each device before any data tool runs.
-Each ``show`` call (unless served from cache) re-authenticates as needed, then
-optionally logs out again after the HTTP request to avoid exhausting concurrent
-API sessions on the controllers (see ``AOS8_LOGOUT_AFTER_EACH_TOOL``).
+Each ``show`` call (unless served from cache) re-authenticates as needed and
+reuses the same HTTP client for the lifetime of the MCP session.
 
 The store also hosts the shared :class:`ShowResultCache` so cached entries are
 purged when a session is destroyed.
@@ -35,14 +34,6 @@ from aos8_mcp.cache import CacheTier, ShowResultCache
 
 
 log = logging.getLogger("aos8_mcp.session_store")
-
-_LOGOUT_AFTER_EACH_TOOL = os.environ.get("AOS8_LOGOUT_AFTER_EACH_TOOL", "1").strip().lower() not in (
-    "0",
-    "false",
-    "no",
-    "off",
-)
-
 
 @dataclass
 class Aos8ServerSession:
@@ -95,16 +86,10 @@ class Aos8ServerSession:
 
     async def close_all(self) -> None:
         if self.mm_client:
-            try:
-                await self.mm_client.logout()
-            finally:
-                await self.mm_client.aclose()
+            await self.mm_client.aclose()
             self.mm_client = None
         for ip, cli in list(self.md_clients.items()):
-            try:
-                await cli.logout()
-            finally:
-                await cli.aclose()
+            await cli.aclose()
             del self.md_clients[ip]
 
     def describe(self) -> dict[str, Any]:
@@ -122,7 +107,6 @@ class Aos8ServerSession:
             "age_seconds": round(now - self.created_at_monotonic, 1),
             "idle_seconds": round(self.idle_seconds(now), 1),
             "uidaruba_ttl_seconds": int(configured_uidaruba_ttl_seconds()),
-            "logout_after_each_tool": _LOGOUT_AFTER_EACH_TOOL,
         }
 
 
@@ -154,11 +138,6 @@ class SessionStore:
     @property
     def reap_interval(self) -> float:
         return self._reap_interval
-
-    @property
-    def logout_after_each_tool(self) -> bool:
-        """When true, each uncached ``show`` ends with ``/v1/api/logout`` to free controller slots."""
-        return _LOGOUT_AFTER_EACH_TOOL
 
     def _maybe_start_reaper(self) -> None:
         """Start the background reaper lazily, bound to the running event loop."""
@@ -398,17 +377,13 @@ class SessionStore:
     async def _run_show_with_relogin(
         client: ArubaDeviceClient, command: str
     ) -> tuple[int, Any]:
-        """Login (or refresh by TTL), run ``show``, then optionally logout to free controller slots."""
+        """Login (or refresh by TTL), then run ``show``."""
         await client.ensure_ready_for_show()
         try:
-            try:
-                return await client.show_command(command)
-            except ArubaAuthExpired:
-                await client.relogin()
-                return await client.show_command(command)
-        finally:
-            if _LOGOUT_AFTER_EACH_TOOL:
-                await client.logout()
+            return await client.show_command(command)
+        except ArubaAuthExpired:
+            await client.relogin()
+            return await client.show_command(command)
 
 
 def _build_tool_result(
