@@ -62,7 +62,7 @@ aos8-mcp-server
 | `AOS8_DEVICES_CONFIG` | Absolute path to the devices YAML |
 | `AOS8_CACHE_TTL_SECONDS` | `near_realtime` tier TTL in seconds (default `15`) |
 | `AOS8_CACHE_STATIC_TTL` / `AOS8_CACHE_REALTIME_TTL` | `static` / `realtime` tiers (defaults `120` / `0`; `0` disables cache for that tier) |
-| `AOS8_LOG_DEFAULT_TAIL` / `AOS8_TABLE_DEFAULT_CAP` | Default log tail lines and max table rows (`200` / `500`) |
+| `AOS8_LOG_DEFAULT_TAIL` / `AOS8_LOG_MAX_TAIL` / `AOS8_TABLE_DEFAULT_CAP` | Default log truncation, device `tail` cap, max table rows (`200` / `200` / `500`) |
 | `AOS8_SESSION_IDLE_TIMEOUT_SECONDS` | Idle auto logout in seconds (default `1800`; `0` disables) |
 | `AOS8_SESSION_IDLE_SCAN_SECONDS` | Idle scan interval (default `60`) |
 | `AOS8_MCP_STATELESS_HTTP` | `true` for stateless HTTP (some UIs need this) |
@@ -100,7 +100,7 @@ Example (field names depend on your UI):
 | Local identity/state | `aos8_system(..., variant="switchinfo")` returns hostname / system time / OS version / uptime / reboot cause / management IP / role in one call; `variant="switch_software"` for software/build details |
 | Controller hierarchy | `aos8_controllers(..., variant="switches_summary")`, `variant="switches_state_inprogress"` etc.; short aliases `summary` / `debug` / `regulatory` / `state_down` are accepted |
 | RF | Runtime: `aos8_rf(..., variant="arm_rf_summary")`; RF profiles (`show rf`): variants such as `rf_arm_profile`, `rf_spectrum_profile` — see `aos8_catalog(domain='rf')`; append `arg="default"` for a named profile |
-| Logs | `aos8_log(..., variant="errorlog", tail=500, match="auth")` runs `show log errorlog all 500 | include auth`; variants cover every official `show log` category (`security`/`system`/`user`/`wireless`/`ap_debug`/`arm`/`arm_user_debug`/`network`/`peer_debug`/`user_debug`) |
+| Logs | `aos8_log(..., variant="errorlog", tail=100, match="auth")` runs `show log errorlog all 100 | include auth` (`tail` above `AOS8_LOG_MAX_TAIL` is clamped); variants cover every official `show log` category |
 | Forwarding snapshot | `aos8_forwarding_overview(session_id)`; pass `ap_name` to also filter tunnels for one AP |
 | Forwarding debug | `aos8_datapath(..., variant="tunnel")`, `variant="bridge"` + `ap_name="AP-M020"`, `variant="session_table"` + `arg="10.1.1.1"`, `variant="tunnel_id"` + `arg="12 trusted-vlan"` |
 | AirMatch | `aos8_airmatch(session_id, variant="optimization")`; use `solution_list_all` for network-wide solutions; `ap_name` or `arg` for AP/debug variants — see `aos8_catalog(domain='airmatch')` |

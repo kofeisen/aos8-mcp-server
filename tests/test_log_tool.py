@@ -77,10 +77,24 @@ async def test_basic_variant_runs_expected_command(fake_session: dict[str, Any])
 @pytest.mark.asyncio
 async def test_tail_is_appended_to_command(fake_session: dict[str, Any]) -> None:
     out = await server.aos8_log(
+        session_id="sid-1", variant="errorlog", tail=50
+    )
+    assert out["ok"] is True
+    assert fake_session["command"] == "show log errorlog all 50"
+    assert out["tail_applied"] == 50
+    assert "tail_capped" not in out
+
+
+@pytest.mark.asyncio
+async def test_tail_above_max_is_capped_for_cli(fake_session: dict[str, Any]) -> None:
+    out = await server.aos8_log(
         session_id="sid-1", variant="errorlog", tail=500
     )
     assert out["ok"] is True
-    assert fake_session["command"] == "show log errorlog all 500"
+    assert fake_session["command"] == "show log errorlog all 200"
+    assert out["tail_requested"] == 500
+    assert out["tail_applied"] == 200
+    assert out["tail_capped"] is True
 
 
 @pytest.mark.asyncio
@@ -104,7 +118,8 @@ async def test_tail_and_match_combine_with_tail_before_pipe(
         match="auth",
     )
     assert out["ok"] is True
-    assert fake_session["command"] == "show log security all 500 | include auth"
+    assert fake_session["command"] == "show log security all 200 | include auth"
+    assert out["tail_capped"] is True
 
 
 @pytest.mark.asyncio
@@ -166,6 +181,19 @@ async def test_command_override_bypasses_preset(fake_session: dict[str, Any]) ->
     assert out["ok"] is True
     assert fake_session["command"] == "show log security 10"
     assert "variant" not in out
+
+
+@pytest.mark.asyncio
+async def test_tail_raises_max_lines_when_explicit_max_is_lower(
+    fake_session: dict[str, Any],
+) -> None:
+    """Device tail above max_lines bumps the server-side cap to match."""
+    out = await server.aos8_log(
+        session_id="sid-1", variant="user", tail=100, max_lines=50
+    )
+    assert out["ok"] is True
+    assert fake_session["command"] == "show log user all 100"
+    assert out["tail_applied"] == 100
 
 
 @pytest.mark.asyncio

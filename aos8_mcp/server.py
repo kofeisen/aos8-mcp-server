@@ -72,6 +72,7 @@ store.cache.configure_tier_ttl("near_realtime", _CACHE_DEFAULT_TTL)
 store.cache.configure_tier_ttl("realtime", _CACHE_REALTIME_TTL)
 
 _DEFAULT_LOG_TAIL = int(os.environ.get("AOS8_LOG_DEFAULT_TAIL", "200"))
+_MAX_LOG_TAIL = int(os.environ.get("AOS8_LOG_MAX_TAIL", "200"))
 _DEFAULT_TABLE_CAP = int(os.environ.get("AOS8_TABLE_DEFAULT_CAP", "500"))
 
 # Auto-reap idle sessions (in seconds). ``0`` disables the reaper (legacy behavior).
@@ -130,6 +131,27 @@ def _compose_command(base: str, cli_suffix: str | None) -> str:
 def _escape_for_include(token: str) -> str:
     """Aruba CLI ``| include`` accepts a regex; keep it simple by stripping pipes."""
     return token.replace("|", "").strip()
+
+
+def _resolve_log_tail_limits(
+    tail: int | None,
+    max_lines: int | None,
+) -> tuple[int | None, int, bool]:
+    """Clamp device ``tail``, align server ``max_lines`` upward to match.
+
+    Returns ``(tail_for_cli, effective_max_lines, tail_was_capped)``.
+    """
+    effective_max_lines = max_lines if max_lines is not None else _DEFAULT_LOG_TAIL
+    if tail is None:
+        return None, effective_max_lines, False
+    applied = tail
+    capped = False
+    if _MAX_LOG_TAIL > 0 and applied > _MAX_LOG_TAIL:
+        applied = _MAX_LOG_TAIL
+        capped = True
+    if applied > effective_max_lines:
+        effective_max_lines = applied
+    return applied, effective_max_lines, capped
 
 
 def _compose_datapath_command(
@@ -228,7 +250,8 @@ mcp = FastMCP(
         "  - Wireless clients (``show user`` / ``show user-table``, MD-first): aos8_clients\n"
         "  - AP inventory / radios / BSS: aos8_aps; one AP multi-step bundle: aos8_ap_diagnose(ap_name)\n"
         "  - WLAN / SSID / VAP profiles (``show wlan``, MD-first): aos8_wlan\n"
-        "  - Controller logs: aos8_log (use max_lines for tails)\n"
+        "  - Controller logs: aos8_log (tail= device-side last N, capped; prefer a\n"
+        "    specific variant over 'all'; use match= to filter)\n"
         "  - License / platform / switchinfo: aos8_system\n"
         "  - VLAN / ports / routing / ARP / DHCP bindings: aos8_network\n"
         "  - AAA / RADIUS / dot1x / captive portal / state messages (MD-first): aos8_aaa\n"
@@ -862,14 +885,15 @@ async def aos8_log(
 
     AOS 8 supports two device-side filters that this tool composes for you:
       * ``tail=<N>``   — appends ``<N>`` to the CLI so the controller returns
-        only the last N lines. This is much cheaper than fetching the entire
-        log buffer and trimming server-side (which is what ``max_lines`` does).
+        only the last N lines (capped at ``AOS8_LOG_MAX_TAIL``, default 200).
+        This is much cheaper than fetching the entire log buffer and trimming
+        server-side (which is what ``max_lines`` does).
       * ``match=<token>`` — shortcut for ``cli_suffix='| include <token>'``;
         the token has any ``|`` characters stripped to keep the include-regex
         sane. Both ``tail`` and ``match`` can be combined.
 
-    Example: ``aos8_log(sid, "security", tail=500, match="auth")`` invokes
-    ``show log security all 500 | include auth``.
+    Example: ``aos8_log(sid, "security", tail=100, match="auth")`` invokes
+    ``show log security all 100 | include auth``.
 
     Variants (call ``aos8_catalog(domain='log')`` for the full list — mirrors
     every official ``show log`` subcommand):
@@ -880,8 +904,9 @@ async def aos8_log(
 
     Output: ``normalized`` contains the parsed log lines (with head/tail
     summaries); ``max_lines`` applies a final server-side cap (defaulting to
-    ``AOS8_LOG_DEFAULT_TAIL`` = 200) so even an unbounded fetch stays
-    LLM-friendly.
+    ``AOS8_LOG_DEFAULT_TAIL`` = 200). When ``tail`` exceeds ``max_lines``,
+    ``max_lines`` is raised to match the applied ``tail`` so the response is
+    not silently truncated below what the device returned.
     """
     sid = _coerce_optional_str(session_id)
     if not sid:
@@ -892,10 +917,13 @@ async def aos8_log(
     match_token = _coerce_optional_str(match)
     v = _coerce_optional_str(variant)
 
-    effective_max_lines = max_lines if max_lines is not None else _DEFAULT_LOG_TAIL
-
     if tail is not None and tail <= 0:
         return {"ok": False, "error": "tail must be a positive integer."}
+
+    tail_requested = tail
+    tail_applied, effective_max_lines, tail_capped = _resolve_log_tail_limits(
+        tail, max_lines
+    )
 
     if override:
         base_cmd = override
@@ -914,8 +942,8 @@ async def aos8_log(
         normalizer = preset.normalizer
         variant_used = preset.key
 
-    if tail is not None:
-        base_cmd = f"{base_cmd} {int(tail)}"
+    if tail_applied is not None:
+        base_cmd = f"{base_cmd} {int(tail_applied)}"
 
     if match_token:
         token = _escape_for_include(match_token)
@@ -943,6 +971,11 @@ async def aos8_log(
         enriched, max_lines=effective_max_lines, max_rows=None
     )
     enriched["domain"] = "log"
+    if tail_requested is not None:
+        enriched["tail_applied"] = tail_applied
+        if tail_capped:
+            enriched["tail_requested"] = tail_requested
+            enriched["tail_capped"] = True
     if variant_used:
         enriched["variant"] = variant_used
         enriched["cache_tier"] = cache_tier
