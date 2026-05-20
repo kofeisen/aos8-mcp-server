@@ -35,6 +35,21 @@ from aos8_mcp.cache import CacheTier, ShowResultCache
 
 log = logging.getLogger("aos8_mcp.session_store")
 
+
+def _validate_session_md_ip(sess: Aos8ServerSession, md_ip: str) -> None:
+    """When the session was created with an MD list, restrict ``target='md'`` to those IPs."""
+    if not sess.md_ips:
+        return
+    ip = md_ip.strip()
+    if ip not in sess.md_ips:
+        listed = ", ".join(sess.md_ips)
+        raise ValueError(
+            f"md_ip {ip!r} is not in this session's configured MD list ({listed}). "
+            "Use aos8_session_create_from_config with that MD in aos8.devices.yaml, "
+            "or pick one of the listed IPs (aos8_session_status shows md_ips)."
+        )
+
+
 @dataclass
 class Aos8ServerSession:
     session_id: str
@@ -351,8 +366,10 @@ class SessionStore:
             raise ValueError("target must be 'mm' or 'md'")
         if not md_ip:
             raise ValueError("md_ip is required when target='md'")
-        md_cli = await sess.ensure_md_client(md_ip.strip())
-        cache_key = (session_id, md_ip.strip(), command)
+        md_ip_stripped = md_ip.strip()
+        _validate_session_md_ip(sess, md_ip_stripped)
+        md_cli = await sess.ensure_md_client(md_ip_stripped)
+        cache_key = (session_id, md_ip_stripped, command)
         if use_cache:
             hit = await self.cache.get(cache_key)
             if hit is not None:
@@ -362,12 +379,12 @@ class SessionStore:
         ttl = self.cache.ttl_for_tier(cache_tier)
         status, payload = await self._run_show_with_relogin(md_cli, command)
         result = _build_tool_result(
-            target_host=md_ip.strip(),
+            target_host=md_ip_stripped,
             command=command,
             http_status=status,
             raw=payload,
             executed_on="md",
-            md_ip_used=md_ip.strip(),
+            md_ip_used=md_ip_stripped,
             conductor_rejected=_looks_like_not_on_conductor(payload),
         )
         await self.cache.set(cache_key, {**result, "from_cache": False}, ttl_seconds=ttl)

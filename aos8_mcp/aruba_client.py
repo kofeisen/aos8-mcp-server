@@ -32,6 +32,54 @@ def _uidaruba_refresh_skew_seconds() -> float:
     return float(os.environ.get("AOS8_UIDARUBA_REFRESH_SKEW_SECONDS", "30"))
 
 
+def configured_http_read_timeout_seconds() -> float:
+    """``showcommand`` / login read timeout (default 120s)."""
+    return float(os.environ.get("AOS8_HTTP_READ_TIMEOUT_SECONDS", "120"))
+
+
+def configured_http_connect_timeout_seconds() -> float:
+    """TCP/TLS connect timeout for controller HTTPS (default 30s)."""
+    return float(os.environ.get("AOS8_HTTP_CONNECT_TIMEOUT_SECONDS", "30"))
+
+
+def build_http_timeout() -> httpx.Timeout:
+    return httpx.Timeout(
+        configured_http_read_timeout_seconds(),
+        connect=configured_http_connect_timeout_seconds(),
+    )
+
+
+def format_transport_error(
+    host: str, exc: Exception, *, operation: str = "HTTP request"
+) -> str:
+    """Human-readable message for httpx network / timeout failures."""
+    host = host.strip()
+    if isinstance(exc, httpx.ReadTimeout):
+        read_s = configured_http_read_timeout_seconds()
+        return (
+            f"Timed out waiting for {operation} response from {host} "
+            f"(read timeout {read_s:.0f}s). The controller may be slow or hung; "
+            "retry with a narrower command or adjust AOS8_HTTP_READ_TIMEOUT_SECONDS."
+        )
+    if isinstance(exc, httpx.ConnectTimeout):
+        connect_s = configured_http_connect_timeout_seconds()
+        return (
+            f"Timed out connecting to {host} (connect timeout {connect_s:.0f}s). "
+            "Check reachability, firewall, and that HTTPS :4343 is open."
+        )
+    if isinstance(exc, httpx.TimeoutException):
+        return f"Timed out during {operation} to {host}: {exc!s}"
+    if isinstance(exc, httpx.ConnectError):
+        detail = str(exc).strip() or "connection failed"
+        return (
+            f"Could not connect to {host} during {operation}: {detail}. "
+            "Verify the IP is reachable and included in the session MD list."
+        )
+    if isinstance(exc, httpx.TransportError):
+        return f"Network error talking to {host} during {operation}: {exc!s}"
+    return f"{operation} to {host} failed: {exc!s}"
+
+
 NOT_ON_CONDUCTOR_MARKERS = (
     "This command is not applicable on conductor switch",
     "This command is not applicable on conductor",
@@ -125,7 +173,7 @@ class ArubaDeviceClient:
         self.verify_ssl = verify_ssl
         self._client = httpx.AsyncClient(
             verify=verify_ssl,
-            timeout=httpx.Timeout(120.0, connect=30.0),
+            timeout=build_http_timeout(),
             limits=httpx.Limits(max_connections=10),
             follow_redirects=True,
         )
@@ -146,13 +194,21 @@ class ArubaDeviceClient:
         """True after a successful ``login`` (tokens may be cleared on TTL refresh)."""
         return self._username is not None and self._password is not None
 
+    def _raise_transport(self, exc: Exception, *, operation: str) -> None:
+        raise ArubaHttpError(
+            format_transport_error(self.host, exc, operation=operation)
+        ) from exc
+
     async def login(self, username: str, password: str) -> dict[str, Any]:
         url = f"{self.base_url}/v1/api/login"
-        resp = await self._client.post(
-            url,
-            data={"username": username, "password": password},
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-        )
+        try:
+            resp = await self._client.post(
+                url,
+                data={"username": username, "password": password},
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+        except httpx.TransportError as e:
+            self._raise_transport(e, operation="login")
         body = _safe_json(resp)
         gr = body.get("_global_result") if isinstance(body, dict) else None
         if not isinstance(gr, dict) or str(gr.get("status", "1")) != "0":
@@ -199,11 +255,14 @@ class ArubaDeviceClient:
         if not self.tokens:
             raise ArubaHttpError("Not logged in; call login first")
         url = f"{self.base_url}/v1/configuration/showcommand"
-        resp = await self._client.get(
-            url,
-            params={"command": command, "UIDARUBA": self.tokens.uidaruba},
-            headers={"X-CSRF-Token": self.tokens.csrf},
-        )
+        try:
+            resp = await self._client.get(
+                url,
+                params={"command": command, "UIDARUBA": self.tokens.uidaruba},
+                headers={"X-CSRF-Token": self.tokens.csrf},
+            )
+        except httpx.TransportError as e:
+            self._raise_transport(e, operation="show command")
         parsed = _parse_show_body(resp.text)
         if _looks_like_auth_failure(resp.status_code, parsed):
             raise ArubaAuthExpired(

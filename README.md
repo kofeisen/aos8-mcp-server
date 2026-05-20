@@ -65,6 +65,8 @@ aos8-mcp-server
 | `AOS8_LOG_MAX_TAIL` | Maximum lines sent to the device for `aos8_log` `tail` and auto-capped `show log all` (default `500`) |
 | `AOS8_TABLE_DEFAULT_CAP` | Default `max_rows` for table-style output when the tool omits it (default `500`) |
 | `AOS8_LOG_SUMMARY_DIR` | Non-empty path enables on-disk `aos8_log` structured summaries (**off by default**) |
+| `AOS8_HTTP_READ_TIMEOUT_SECONDS` | Read timeout for login / `showcommand` HTTP calls (default `120`) |
+| `AOS8_HTTP_CONNECT_TIMEOUT_SECONDS` | TCP/TLS connect timeout for controller HTTPS (default `30`) |
 | `AOS8_SESSION_IDLE_TIMEOUT_SECONDS` | Destroy idle sessions after this many seconds (default `1800`; `0` disables) |
 | `AOS8_SESSION_IDLE_SCAN_SECONDS` | Interval between idle-session scans (default `60`) |
 | `AOS8_MCP_STATELESS_HTTP` | Set to `true`, `1`, or `yes` for stateless Streamable HTTP (required by some clients) |

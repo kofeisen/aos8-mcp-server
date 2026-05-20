@@ -31,6 +31,7 @@ import re
 from pathlib import Path
 from typing import Any, Literal
 
+import httpx
 from mcp.server.fastmcp import FastMCP
 from pydantic import ValidationError
 
@@ -118,6 +119,13 @@ def _validate_show_command(cmd: str) -> str | None:
     if not c.lower().startswith("show "):
         return "Only 'show ' commands are allowed."
     return None
+
+
+_SHOW_TOOL_ERRORS = (KeyError, ValueError, ArubaHttpError, httpx.TransportError)
+
+
+def _show_tool_error(exc: Exception) -> dict[str, Any]:
+    return {"ok": False, "error": str(exc)}
 
 
 def _compose_command(base: str, cli_suffix: str | None) -> str:
@@ -602,10 +610,8 @@ async def _execute_preset(
             md_ip=md_ip,
             md_bias_domain=md_bias_domain,
         )
-    except KeyError as e:
-        return {"ok": False, "error": str(e)}
-    except ArubaHttpError as e:
-        return {"ok": False, "error": str(e)}
+    except _SHOW_TOOL_ERRORS as e:
+        return _show_tool_error(e)
     enriched = await _with_normalize(raw, preset.normalizer)
     if bias_note:
         prev = enriched.get("note")
@@ -662,10 +668,8 @@ async def _run_domain(
                 else None,
                 md_bias_domain=domain,
             )
-        except KeyError as e:
-            return {"ok": False, "error": str(e)}
-        except ArubaHttpError as e:
-            return {"ok": False, "error": str(e)}
+        except _SHOW_TOOL_ERRORS as e:
+            return _show_tool_error(e)
         enriched = await _with_normalize(raw, "generic")
         if bias_note:
             prev = enriched.get("note")
@@ -677,10 +681,8 @@ async def _run_domain(
 
     try:
         preset = resolve_preset(domain, v)
-    except KeyError as e:
-        return {"ok": False, "error": str(e)}
-    except ValueError as e:
-        return {"ok": False, "error": str(e)}
+    except _SHOW_TOOL_ERRORS as e:
+        return _show_tool_error(e)
 
     result = await _execute_preset(
         sid,
@@ -725,10 +727,8 @@ async def aos8_session_create_from_config(config_path: str = "") -> dict[str, An
         )
     except FileNotFoundError as e:
         return {"ok": False, "error": str(e)}
-    except ArubaHttpError as e:
-        return {"ok": False, "error": str(e)}
-    except ValueError as e:
-        return {"ok": False, "error": str(e)}
+    except (ArubaHttpError, ValueError, httpx.TransportError) as e:
+        return _show_tool_error(e)
     except ValidationError as e:
         return {"ok": False, "error": f"Invalid config fields: {e}"}
     gr = login_body.get("_global_result") if isinstance(login_body, dict) else {}
@@ -771,8 +771,8 @@ async def aos8_session_create(
             verify_ssl=verify_ssl,
             md_logins=None,
         )
-    except ArubaHttpError as e:
-        return {"ok": False, "error": str(e)}
+    except (ArubaHttpError, httpx.TransportError) as e:
+        return _show_tool_error(e)
     gr = login_body.get("_global_result") if isinstance(login_body, dict) else {}
     return {
         "ok": True,
@@ -812,7 +812,7 @@ async def aos8_session_status(session_id: str) -> dict[str, Any]:
     try:
         info = await store.describe(sid)
     except KeyError as e:
-        return {"ok": False, "error": str(e)}
+        return _show_tool_error(e)
     cache_size = await store.cache.size()
     return {
         "ok": True,
@@ -865,10 +865,8 @@ async def aos8_show(
             use_cache=use_cache,
             cache_tier="near_realtime",
         )
-    except KeyError as e:
-        return {"ok": False, "error": str(e)}
-    except (ArubaHttpError, ValueError) as e:
-        return {"ok": False, "error": str(e)}
+    except _SHOW_TOOL_ERRORS as e:
+        return _show_tool_error(e)
     hint = _normalizer_for_command(cmd)
     enriched = await _with_normalize(raw, hint)
     enriched = apply_truncation(enriched, max_lines=max_lines, max_rows=max_rows)
@@ -904,7 +902,7 @@ async def aos8_catalog(domain: str | None = None) -> dict[str, Any]:
         try:
             spec = get_domain(name)
         except KeyError as e:
-            return {"ok": False, "error": str(e)}
+            return _show_tool_error(e)
         return {
             "ok": True,
             "domain": name,
@@ -1145,10 +1143,8 @@ async def aos8_log(
     else:
         try:
             preset = resolve_preset("log", v)
-        except KeyError as e:
-            return {"ok": False, "error": str(e)}
-        except ValueError as e:
-            return {"ok": False, "error": str(e)}
+        except _SHOW_TOOL_ERRORS as e:
+            return _show_tool_error(e)
         base_cmd = preset.command
         cache_tier = preset.cache_tier
         normalizer = preset.normalizer
@@ -1184,12 +1180,8 @@ async def aos8_log(
             use_cache=use_cache,
             cache_tier=cache_tier,
         )
-    except KeyError as e:
-        return {"ok": False, "error": str(e)}
-    except ValueError as e:
-        return {"ok": False, "error": str(e)}
-    except ArubaHttpError as e:
-        return {"ok": False, "error": str(e)}
+    except _SHOW_TOOL_ERRORS as e:
+        return _show_tool_error(e)
 
     enriched = await _with_normalize(raw, normalizer)
     enriched = apply_truncation(
@@ -1360,10 +1352,8 @@ async def aos8_aaa(
                 md_ip=md_eff,
                 md_bias_domain="aaa",
             )
-        except KeyError as e:
-            return {"ok": False, "error": str(e)}
-        except ArubaHttpError as e:
-            return {"ok": False, "error": str(e)}
+        except _SHOW_TOOL_ERRORS as e:
+            return _show_tool_error(e)
         enriched = await _with_normalize(raw, "generic")
         if bias_note:
             prev = enriched.get("note")
@@ -1375,10 +1365,8 @@ async def aos8_aaa(
 
     try:
         preset = resolve_preset("aaa", v)
-    except KeyError as e:
-        return {"ok": False, "error": str(e)}
-    except ValueError as e:
-        return {"ok": False, "error": str(e)}
+    except _SHOW_TOOL_ERRORS as e:
+        return _show_tool_error(e)
 
     extra_cli = _compose_aaa_extra_cli(
         preset.key,
@@ -1472,7 +1460,7 @@ async def aos8_cluster(
     try:
         sess = await store.get(sid)
     except KeyError as e:
-        return {"ok": False, "error": str(e)}
+        return _show_tool_error(e)
 
     if override:
         base_cmd = override
@@ -1482,10 +1470,8 @@ async def aos8_cluster(
     else:
         try:
             preset = resolve_preset("cluster", v)
-        except KeyError as e:
-            return {"ok": False, "error": str(e)}
-        except ValueError as e:
-            return {"ok": False, "error": str(e)}
+        except _SHOW_TOOL_ERRORS as e:
+            return _show_tool_error(e)
         base_cmd = preset.command
         cache_tier = preset.cache_tier
         normalizer = preset.normalizer
@@ -1522,10 +1508,8 @@ async def aos8_cluster(
             raw = await store.show_with_mm_then_md_fallback(
                 sid, cmd, use_cache=use_cache, cache_tier=cache_tier
             )
-    except KeyError as e:
-        return {"ok": False, "error": str(e)}
-    except (ArubaHttpError, ValueError) as e:
-        return {"ok": False, "error": str(e)}
+    except _SHOW_TOOL_ERRORS as e:
+        return _show_tool_error(e)
 
     enriched = await _with_normalize(raw, normalizer)
     enriched = apply_truncation(
@@ -1650,10 +1634,8 @@ async def aos8_airmatch(
             raw = await store.show_with_mm_then_md_fallback(
                 sid, cmd, use_cache=use_cache, cache_tier="near_realtime"
             )
-        except KeyError as e:
-            return {"ok": False, "error": str(e)}
-        except ArubaHttpError as e:
-            return {"ok": False, "error": str(e)}
+        except _SHOW_TOOL_ERRORS as e:
+            return _show_tool_error(e)
         enriched = await _with_normalize(raw, "generic")
         enriched = apply_truncation(
             enriched, max_lines=effective_max_lines, max_rows=effective_max_rows
@@ -1662,10 +1644,8 @@ async def aos8_airmatch(
 
     try:
         preset = resolve_preset("airmatch", v)
-    except KeyError as e:
-        return {"ok": False, "error": str(e)}
-    except ValueError as e:
-        return {"ok": False, "error": str(e)}
+    except _SHOW_TOOL_ERRORS as e:
+        return _show_tool_error(e)
 
     base_cmd = _compose_airmatch_command(
         preset.key,
@@ -1682,10 +1662,8 @@ async def aos8_airmatch(
         raw = await store.show_with_mm_then_md_fallback(
             sid, cmd, use_cache=use_cache, cache_tier=preset.cache_tier
         )
-    except KeyError as e:
-        return {"ok": False, "error": str(e)}
-    except ArubaHttpError as e:
-        return {"ok": False, "error": str(e)}
+    except _SHOW_TOOL_ERRORS as e:
+        return _show_tool_error(e)
 
     enriched = await _with_normalize(raw, preset.normalizer)
     enriched = apply_truncation(
@@ -1768,10 +1746,8 @@ async def aos8_datapath(
             raw = await store.show_with_mm_then_md_fallback(
                 sid, cmd, use_cache=use_cache, cache_tier="realtime"
             )
-        except KeyError as e:
-            return {"ok": False, "error": str(e)}
-        except ArubaHttpError as e:
-            return {"ok": False, "error": str(e)}
+        except _SHOW_TOOL_ERRORS as e:
+            return _show_tool_error(e)
         enriched = await _with_normalize(raw, "generic")
         enriched = apply_truncation(
             enriched, max_lines=effective_max_lines, max_rows=effective_max_rows
@@ -1780,10 +1756,8 @@ async def aos8_datapath(
 
     try:
         preset = resolve_preset("datapath", v)
-    except KeyError as e:
-        return {"ok": False, "error": str(e)}
-    except ValueError as e:
-        return {"ok": False, "error": str(e)}
+    except _SHOW_TOOL_ERRORS as e:
+        return _show_tool_error(e)
 
     base_cmd = _compose_datapath_command(
         preset.command, ap_name=apn, ip_addr=ipa, arg=extra
@@ -1797,10 +1771,8 @@ async def aos8_datapath(
         raw = await store.show_with_mm_then_md_fallback(
             sid, cmd, use_cache=use_cache, cache_tier=preset.cache_tier
         )
-    except KeyError as e:
-        return {"ok": False, "error": str(e)}
-    except ArubaHttpError as e:
-        return {"ok": False, "error": str(e)}
+    except _SHOW_TOOL_ERRORS as e:
+        return _show_tool_error(e)
 
     enriched = await _with_normalize(raw, preset.normalizer)
     enriched = apply_truncation(

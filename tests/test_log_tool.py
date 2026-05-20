@@ -352,6 +352,73 @@ async def test_log_target_md_requires_md_ip(fake_session: dict[str, Any]) -> Non
 
 
 @pytest.mark.asyncio
+async def test_log_read_timeout_returns_structured_error(
+    fake_session: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from aos8_mcp.aruba_client import ArubaHttpError
+
+    async def fake_show_on_target(
+        session_id: str,
+        command: str,
+        *,
+        target: str,
+        md_ip: str | None,
+        use_cache: bool,
+        cache_tier: str | None = None,
+    ) -> dict[str, Any]:
+        raise ArubaHttpError(
+            "Timed out waiting for show command response from 10.128.2.11 "
+            "(read timeout 120s)."
+        )
+
+    monkeypatch.setattr(server.store, "show_on_target", fake_show_on_target)
+
+    out = await server.aos8_log(
+        session_id="sid-1",
+        variant="system",
+        tail=30,
+        target="md",
+        md_ip="10.128.2.11",
+    )
+    assert out == {
+        "ok": False,
+        "error": (
+            "Timed out waiting for show command response from 10.128.2.11 "
+            "(read timeout 120s)."
+        ),
+    }
+
+
+@pytest.mark.asyncio
+async def test_log_target_md_rejects_ip_not_in_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeSess:
+        md_ips = ["10.0.10.16"]
+
+        def touch(self) -> None:
+            return None
+
+    async def fake_get(session_id: str) -> _FakeSess:
+        if session_id != "sid-1":
+            raise KeyError(f"Unknown session_id {session_id!r}; create a session first.")
+        return _FakeSess()
+
+    monkeypatch.setattr(server.store, "get", fake_get)
+
+    out = await server.aos8_log(
+        session_id="sid-1",
+        variant="system",
+        tail=30,
+        target="md",
+        md_ip="10.128.2.11",
+    )
+    assert out["ok"] is False
+    assert "10.128.2.11" in out["error"]
+    assert "configured MD list" in out["error"]
+
+
+@pytest.mark.asyncio
 async def test_aos8_show_log_all_include_gets_tail_cap(
     fake_session: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
