@@ -177,6 +177,55 @@ async def test_match_becomes_include_pipe(fake_session: dict[str, Any]) -> None:
 
 
 @pytest.mark.asyncio
+async def test_match_list_uses_separate_include_pipes(
+    fake_session: dict[str, Any],
+) -> None:
+    out = await server.aos8_log(
+        session_id="sid-1",
+        variant="all",
+        tail=500,
+        match=["stall-crash", "watchdog", "Killing"],
+    )
+    assert out["ok"] is True
+    assert (
+        fake_session["command"]
+        == "show log all 500 | include stall-crash | include watchdog | include Killing"
+    )
+
+
+@pytest.mark.asyncio
+async def test_match_comma_separated_uses_separate_include_pipes(
+    fake_session: dict[str, Any],
+) -> None:
+    out = await server.aos8_log(
+        session_id="sid-1",
+        variant="all",
+        tail=500,
+        match="stall-crash,watchdog,Killing",
+    )
+    assert out["ok"] is True
+    assert (
+        fake_session["command"]
+        == "show log all 500 | include stall-crash | include watchdog | include Killing"
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, []),
+        ("auth", ["auth"]),
+        (["a", "b"], ["a", "b"]),
+        ("a,b", ["a", "b"]),
+        ("foo|bar", ["foobar"]),
+        ("||", []),
+    ],
+)
+def test_coerce_match_tokens(raw: str | list[str] | None, expected: list[str]) -> None:
+    assert server._coerce_match_tokens(raw) == expected
+
+
+@pytest.mark.asyncio
 async def test_tail_and_match_combine_with_tail_before_pipe(
     fake_session: dict[str, Any],
 ) -> None:

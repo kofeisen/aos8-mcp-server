@@ -312,7 +312,7 @@ LOG_PRESETS: dict[str, ShowPreset] = {
         description=(
             "Full controller log buffer across every category. Large by"
             " default — use tail=<N> for device-side tail and / or"
-            " cli_suffix / match=<token> for grep-style filtering."
+            " cli_suffix / match=<token> or match=[t1,t2] (each becomes ``| include``)."
         ),
         normalizer="log_text",
         cache_tier="realtime",

@@ -143,6 +143,39 @@ def _escape_for_include(token: str) -> str:
     return token.replace("|", "").strip()
 
 
+def _coerce_match_tokens(value: str | list[str] | None) -> list[str]:
+    """Turn ``match=`` into one or more distinct ``| include`` tokens.
+
+    Accepts a single string, a comma-separated string, or a list of strings.
+    Each non-empty token is escaped and emitted as its own ``| include`` clause
+    (e.g. ``["stall-crash", "watchdog"]`` → ``| include stall-crash | include watchdog``).
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        raw_parts = [str(x) for x in value if x is not None]
+    elif isinstance(value, str):
+        s = value.strip()
+        if not s or s.casefold() in ("undefined", "null", "none"):
+            return []
+        raw_parts = [p.strip() for p in s.split(",")] if "," in s else [s]
+    else:
+        return []
+    out: list[str] = []
+    for part in raw_parts:
+        token = _escape_for_include(part)
+        if token:
+            out.append(token)
+    return out
+
+
+def _format_include_clauses(tokens: list[str]) -> str:
+    """Join tokens as repeated Aruba ``| include`` pipe stages."""
+    if not tokens:
+        return ""
+    return " ".join(f"| include {t}" for t in tokens)
+
+
 _LOG_ALL_CATEGORY = "show log all"
 _RE_LOG_ALL_HEAD = re.compile(r"^show\s+log\s+all(?:\s+(\d+))?$", re.IGNORECASE)
 
@@ -343,7 +376,8 @@ mcp = FastMCP(
         "  - AP inventory / radios / BSS: aos8_aps; one AP multi-step bundle: aos8_ap_diagnose(ap_name)\n"
         "  - WLAN / SSID / VAP profiles (``show wlan``, MD-first): aos8_wlan\n"
         "  - Controller logs: aos8_log (tail= device-side last N, capped; prefer a\n"
-        "    specific variant over 'all'; use match= to filter). ``show log all`` always\n"
+        "    specific variant over 'all'; use match= or match=[t1,t2] — each token is a\n"
+        "    separate ``| include``). ``show log all`` always\n"
         "    gets AOS8_LOG_MAX_TAIL on the device when tail is omitted (including\n"
         "    command_override / aos8_show). For MD logs use target='md' and md_ip=.\n"
         "  - License / platform / switchinfo: aos8_system\n"
@@ -1077,7 +1111,7 @@ async def aos8_log(
     session_id: str,
     variant: str = "all",
     tail: int | None = None,
-    match: str | None = None,
+    match: str | list[str] | None = None,
     cli_suffix: str | None = None,
     command_override: str | None = None,
     use_cache: bool = False,
@@ -1094,7 +1128,10 @@ async def aos8_log(
       * ``include_rotated`` — when ``tail`` is omitted, append ``all`` for
         rotated files (default True → ``show log security all``). Ignored when
         ``tail`` is set.
-      * ``match=<token>`` — shortcut for ``cli_suffix='| include <token>'``.
+      * ``match=<token>`` or ``match=[t1, t2, …]`` — each token becomes its own
+        ``| include`` stage (e.g. ``match=["stall-crash", "watchdog"]`` →
+        ``… | include stall-crash | include watchdog``). Comma-separated
+        strings are also accepted.
       * ``show log all`` (variant ``all``, ``command_override``, or
         ``aos8_show``) always gets a device line cap: if you omit ``tail``, the
         server appends ``AOS8_LOG_MAX_TAIL`` (e.g. ``show log all 200 | include auth``).
@@ -1124,7 +1161,7 @@ async def aos8_log(
 
     override = _coerce_optional_str(command_override)
     suf = _coerce_optional_str(cli_suffix)
-    match_token = _coerce_optional_str(match)
+    match_tokens = _coerce_match_tokens(match)
     v = _coerce_optional_str(variant)
 
     if tail is not None and tail <= 0:
@@ -1154,11 +1191,10 @@ async def aos8_log(
         base_cmd, tail=tail_applied, include_rotated=include_rotated
     )
 
-    if match_token:
-        token = _escape_for_include(match_token)
-        if not token:
-            return {"ok": False, "error": "match cannot be empty or pipe-only."}
-        include_clause = f"| include {token}"
+    if match is not None and not match_tokens:
+        return {"ok": False, "error": "match cannot be empty or pipe-only."}
+    if match_tokens:
+        include_clause = _format_include_clauses(match_tokens)
         suf = f"{include_clause} {suf}".strip() if suf else include_clause
 
     cmd = _compose_command(base_cmd, suf)
