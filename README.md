@@ -1,80 +1,81 @@
 # aos8-mcp-server
 
-面向 **Aruba AOS 8.x** 的 **只读** MCP 服务：通过 Mobility Master（MM）与 MD 上的 **showcommand** HTTP API 执行 `show`，默认 **Streamable HTTP**。
+A **read-only** MCP server for **Aruba AOS 8.x**. It runs `show` commands on Mobility Master (MM) and managed devices (MDs) through the controller **showcommand** HTTP API. The default transport is **Streamable HTTP**.
 
-> 非 HPE 官方项目；凭据与网络访问由部署方自行负责。  
-> **English:** [README.en.md](README.en.md)
+> Not an HPE/Aruba official project. You are responsible for credentials, TLS verification, and how you expose the service on your network.
 
-## 设备配置（推荐）
+## Device configuration (recommended)
 
-1. `cp aos8.devices.example.yaml aos8.devices.yaml`，填写 MM 与 `md` 列表的 `ip` / `username` / `password`（MD 可省略账号则沿用 MM）。
-2. 进程工作目录需能读到该文件，或设置 `AOS8_DEVICES_CONFIG` 指向绝对路径。
-3. 在客户端中调用 **`aos8_session_create_from_config`** 建立会话（可选 `config_path`），避免在对话里粘贴密码。
+1. Copy `aos8.devices.example.yaml` to `aos8.devices.yaml` and set `ip`, `username`, and `password` for the MM and each MD (MD entries may omit credentials to reuse the MM account).
+2. Start the server from a working directory that can read that file, or set `AOS8_DEVICES_CONFIG` to its path.
+3. In your MCP client, call **`aos8_session_create_from_config`** (optional `config_path`) so passwords do not need to appear in chat.
 
-## 功能要点
+## Features
 
-| 项 | 说明 |
+| Area | Details |
 | --- | --- |
-| 会话 | `aos8_session_create_from_config` / `aos8_session_create` → 复用 `session_id` → `aos8_session_destroy`；`aos8_session_status` 查看状态与空闲时间 |
-| 执行 | MM 优先；若提示 *not applicable on conductor*，按配置 **MD 顺序** 回落；Token 失效时 **自动重登一次** |
-| 工具 | 领域：`aos8_controllers`、`aos8_clients`、`aos8_aps`、`aos8_wlan`、`aos8_log`、`aos8_system`、`aos8_network`、`aos8_aaa`、`aos8_cluster`、`aos8_rf`、`aos8_airmatch`、`aos8_datapath`；自由：`aos8_show`；目录：`aos8_catalog` |
-| 诊断 | `aos8_ap_diagnose`、`aos8_client_diagnose`、`aos8_health_overview`、`aos8_forwarding_overview`（内部并行多条 `show`） |
-| 响应 | `raw` 为设备原始解析结果；`normalized` 为启发式摘要（表格类 `count`+`items`；日志类 `summary.error_groups` 等结构化字段） |
-| 裁剪 | `max_lines`（日志，默认保留尾部 200 行）、`max_rows`（表格，默认 500 行） |
-| 缓存 | `static` / `near_realtime` / `realtime` 三档 TTL，见下方环境变量 |
+| Session | Create with `aos8_session_create_from_config` (preferred) or `aos8_session_create`; reuse `session_id`; tear down with `aos8_session_destroy`. `aos8_session_status` reports MM/MD login state, idle time, and cache size. |
+| Execution | Default path is MM first. If the response indicates the command is **not applicable on the conductor**, the server tries each **configured MD** in order. On `UIDARUBA` / API auth expiry, it **re-logins once** and retries the same command. Use `target='md'` with `md_ip` to run on a specific MD without MM-first routing. |
+| Tools | Domain presets: `aos8_controllers`, `aos8_clients`, `aos8_aps`, `aos8_wlan`, `aos8_log`, `aos8_system`, `aos8_network`, `aos8_aaa`, `aos8_cluster`, `aos8_rf`, `aos8_airmatch`, `aos8_datapath`. Ad-hoc CLI: `aos8_show`. Discover variants: `aos8_catalog`. |
+| Diagnostics | Composite tools that run multiple `show` commands in parallel: `aos8_ap_diagnose`, `aos8_client_diagnose`, `aos8_health_overview`, `aos8_forwarding_overview`. |
+| Response | Every successful data call returns `raw` (parsed device payload) and `normalized` (heuristic summary). Tables: `count` + `items`. Logs: `kind: log` with a `summary` object including `error_groups`. |
+| Truncation | Tool parameters `max_lines` (logs) and `max_rows` (tables) trim the response server-side (defaults **200** / **500**, overridable via `AOS8_LOG_DEFAULT_TAIL` and `AOS8_TABLE_DEFAULT_CAP`). Log fetches also enforce a device-side line cap via `AOS8_LOG_MAX_TAIL`. |
+| Cache | Per-preset tiers: `static`, `near_realtime`, `realtime`. TTLs are set with the variables below; `realtime` defaults to no cache (`0`). |
 
-## 控制器侧建议
+## Controller recommendation
 
-在 MM/MD 上配置 **`#no paging`**，避免 `show` 分页导致 API 输出异常或截断。
+Configure **`#no paging`** on MM and MDs so `show` output is not held in interactive paging, which can break or truncate API results.
 
-## 安装
+## Install
 
 ```bash
 cd aos8-mcp-server
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"   # 仅运行服务可省略 .[dev]
+pip install -e ".[dev]"   # omit [dev] if you only run the server
 ```
 
-## 启动
+## Run
 
-**脚本（推荐）：** 将工作目录切到仓库根目录，优先使用 `.venv/bin/python`。
+**Script (recommended):** changes the working directory to the repo root and prefers `.venv/bin/python`.
 
 ```bash
 chmod +x scripts/start-aos8-mcp.sh
 ./scripts/start-aos8-mcp.sh
 ```
 
-**直接运行：**
+**Direct:**
 
 ```bash
 cd aos8-mcp-server
 python -m aos8_mcp
-# 或
+# or
 aos8-mcp-server
 ```
 
-**常用环境变量**（可选；亦可在 systemd `Environment=` 中设置）：
+**Common environment variables** (optional; also valid in systemd `Environment=`):
 
-| 变量 | 含义 |
+| Variable | Purpose |
 | --- | --- |
-| `AOS8_MCP_HOST` / `AOS8_MCP_PORT` | 监听地址与端口（默认 `0.0.0.0:8765`） |
-| `AOS8_DEVICES_CONFIG` | 设备 YAML 绝对路径 |
-| `AOS8_CACHE_TTL_SECONDS` | `near_realtime` 档 TTL（秒，默认 `15`） |
-| `AOS8_CACHE_STATIC_TTL` / `AOS8_CACHE_REALTIME_TTL` | `static` / `realtime` 档（默认 `120` / `0`，`0` 表示不缓存） |
-| `AOS8_LOG_DEFAULT_TAIL` / `AOS8_LOG_MAX_TAIL` / `AOS8_TABLE_DEFAULT_CAP` | 日志默认截断行数、设备 `tail` 上限、表格最大行数（默认 `200` / `500` / `500`） |
-| `AOS8_LOG_SUMMARY_DIR` | 启用后将 `aos8_log` 结构化摘要写入该目录（**默认关闭**；设为空亦关闭） |
-| `AOS8_SESSION_IDLE_TIMEOUT_SECONDS` | 空闲自动登出（秒，默认 `1800`；`0` 关闭） |
-| `AOS8_SESSION_IDLE_SCAN_SECONDS` | 空闲扫描间隔（默认 `60`） |
-| `AOS8_MCP_STATELESS_HTTP` | `true` 时每请求无状态，部分 Web UI 握手更简单 |
+| `AOS8_MCP_HOST` / `AOS8_MCP_PORT` | HTTP bind address and port (default `0.0.0.0:8765`) |
+| `AOS8_DEVICES_CONFIG` | Path to the devices YAML (default: `aos8.devices.yaml` in the process working directory) |
+| `AOS8_CACHE_TTL_SECONDS` | TTL for the `near_realtime` cache tier in seconds (default `15`) |
+| `AOS8_CACHE_STATIC_TTL` / `AOS8_CACHE_REALTIME_TTL` | TTL for `static` / `realtime` tiers in seconds (defaults `120` / `0`; `0` disables caching for that tier) |
+| `AOS8_LOG_DEFAULT_TAIL` | Default server-side `max_lines` for log-style output when the tool omits it (default `200`) |
+| `AOS8_LOG_MAX_TAIL` | Maximum lines sent to the device for `aos8_log` `tail` and auto-capped `show log all` (default `500`) |
+| `AOS8_TABLE_DEFAULT_CAP` | Default `max_rows` for table-style output when the tool omits it (default `500`) |
+| `AOS8_LOG_SUMMARY_DIR` | Non-empty path enables on-disk `aos8_log` structured summaries (**off by default**) |
+| `AOS8_SESSION_IDLE_TIMEOUT_SECONDS` | Destroy idle sessions after this many seconds (default `1800`; `0` disables) |
+| `AOS8_SESSION_IDLE_SCAN_SECONDS` | Interval between idle-session scans (default `60`) |
+| `AOS8_MCP_STATELESS_HTTP` | Set to `true`, `1`, or `yes` for stateless Streamable HTTP (required by some clients) |
 
-**systemd：** 参考 `scripts/aos8-mcp.service.example` 修改 `User`、`WorkingDirectory`、`ExecStart` 后安装单元。
+**systemd:** adapt `scripts/aos8-mcp.service.example` (`User`, `WorkingDirectory`, `ExecStart`) and install the unit.
 
-## MCP 客户端
+## MCP clients
 
-端点：`http://<主机>:<端口>/mcp`（Streamable HTTP）。`initialize` 后响应头含 `mcp-session-id`，后续请求需带同名头（除非开启 `AOS8_MCP_STATELESS_HTTP`）。
+Endpoint: `http://<host>:<port>/mcp` (Streamable HTTP). After `initialize`, responses may include an `mcp-session-id` header; send the same value on later requests unless `AOS8_MCP_STATELESS_HTTP=true`.
 
-示例（字段以你所用 UI 文档为准）：
+Example (field names depend on your client):
 
 ```json
 {
@@ -87,26 +88,26 @@ aos8-mcp-server
 }
 ```
 
-## 排障速查
+## Troubleshooting quick reference
 
-| 场景 | 调用 |
+| Scenario | Call |
 | --- | --- |
-| 平台总览 | `aos8_health_overview(session_id)` |
-| AP 状态 / 离线 | `aos8_ap_diagnose(session_id, ap_name="AP-M020")`（默认含 ``show ap arm rf-summary`` 过滤该 AP；不需要时用 `include_rf=False`）；或 `aos8_aps` + `variant="database"` + `cli_suffix` |
-| 终端 | `aos8_client_diagnose(session_id, identifier="aa:bb:cc:dd:ee:ff")` |
-| 认证 | `aos8_aaa` + `variant="state_messages"` + `cli_suffix` 用 `include` 过滤用户或 MAC |
-| 集群 | `aos8_cluster(..., variant="lc_cluster_group_membership")`；自动落到 MD（如需指定成员加 `md_ip="10.1.1.1"`）。常用变体：`heartbeat_counters`、`load_ap`、`history`、`vlan_probe_status`、`dp_cluster_details` + `arg="peer 10.1.1.1"` |
-| 路由 | `aos8_network(..., variant="ip_route")` |
-| 资源 | `aos8_system(..., variant="cpuload")` 或 `variant="memory"` |
-| 本机身份/状态 | `aos8_system(..., variant="switchinfo")` 一次拿到 hostname/系统时间/OS 版本/uptime/重启原因/管理 IP/角色；或 `variant="switch_software"` 看本机软件信息 |
-| 控制器层级 | `aos8_controllers(..., variant="switches_summary")`、`variant="switches_state_inprogress"` 等；短别名 `summary` / `debug` / `regulatory` / `state_down` 均可 |
-| RF | 运行时：`aos8_rf(..., variant="arm_rf_summary")`；配置：`variant="rf_arm_profile"`、`rf_spectrum_profile` 等（见 `aos8_catalog(domain='rf')`）；指定某 profile 名时加 `arg="default"` |
-| 日志 | `aos8_log(..., tail=100, target="md", md_ip="10.0.10.16")` 在指定 MD 上执行；默认 `target="mm"`。`aos8_show` 的 `show log …` 同样支持结构化摘要与 `target`/`md_ip` |
-| 转发面快照 | `aos8_forwarding_overview(session_id)`；可选 `ap_name` 过滤该 AP 的隧道 |
-| 转发排错 | `aos8_datapath(..., variant="tunnel")`、`variant="bridge"` + `ap_name="AP-M020"`、`variant="session_table"` + `arg="10.1.1.1"`、`variant="tunnel_id"` + `arg="12 trusted-vlan"` |
-| AirMatch | `aos8_airmatch(session_id, variant="optimization")`；全网方案见 `variant="solution_list_all"`；AP 维度用 `ap_name` 或 `arg`（如 `debug_history`）；完整列表 `aos8_catalog(domain='airmatch')` |
+| Platform snapshot | `aos8_health_overview(session_id)` |
+| AP status / offline | `aos8_ap_diagnose(session_id, ap_name="AP-M020")` (includes filtered `show ap arm rf-summary` by default; pass `include_rf=False` to skip); or `aos8_aps` with `variant="database"` and `cli_suffix` |
+| Client trace | `aos8_client_diagnose(session_id, identifier="aa:bb:cc:dd:ee:ff")` |
+| Auth issues | `aos8_aaa` with `variant="state_messages"` and `cli_suffix` using `include` on username or MAC |
+| Cluster | `aos8_cluster(..., variant="lc_cluster_group_membership")` targets the first configured MD by default (override with `md_ip="10.1.1.1"`). Other useful variants: `heartbeat_counters`, `load_ap`, `history`, `vlan_probe_status`, `dp_cluster_details` + `arg="peer 10.1.1.1"` |
+| Routing | `aos8_network(..., variant="ip_route")` |
+| Resources | `aos8_system(..., variant="cpuload")` or `variant="memory"` |
+| Local identity / state | `aos8_system(..., variant="switchinfo")` for hostname, system time, OS version, uptime, reboot cause, management IP, and role in one call; `variant="switch_software"` for build details |
+| Controller hierarchy | `aos8_controllers(..., variant="switches_summary")`, `variant="switches_state_inprogress"`, etc.; short aliases `summary`, `debug`, `regulatory`, `state_down` are accepted |
+| RF | Runtime: `aos8_rf(..., variant="arm_rf_summary")`; RF profiles (`show rf`): variants such as `rf_arm_profile`, `rf_spectrum_profile` — see `aos8_catalog(domain='rf')`; add `arg="default"` for a named profile |
+| Logs | `aos8_log(..., tail=100, target="md", md_ip="10.0.10.16")` on a specific MD; default `target="mm"`. `aos8_show` with `show log …` uses the same structured summary and routing |
+| Forwarding snapshot | `aos8_forwarding_overview(session_id)`; pass `ap_name` to filter tunnels for one AP |
+| Forwarding debug | `aos8_datapath(..., variant="tunnel")`, `variant="bridge"` + `ap_name="AP-M020"`, `variant="session_table"` + `arg="10.1.1.1"`, `variant="tunnel_id"` + `arg="12 trusted-vlan"` |
+| AirMatch | `aos8_airmatch(session_id, variant="optimization")`; `solution_list_all` for network-wide solutions; use `ap_name` or `arg` for AP/debug variants — see `aos8_catalog(domain='airmatch')` |
 
-## 扩展与测试
+## Extending and testing
 
-- 预设命令与缓存档位：`aos8_mcp/show_registry.py`；归一化：`aos8_mcp/normalize.py`。
-- 运行测试：`python -m pytest -q`（需 `pip install -e ".[dev]"`）。
+- Preset commands and cache tiers: `aos8_mcp/show_registry.py`; normalization: `aos8_mcp/normalize.py`.
+- Tests: `python -m pytest -q` (requires `pip install -e ".[dev]"`).
